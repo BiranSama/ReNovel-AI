@@ -1,7 +1,27 @@
-NovelForge AI 🖋️✨
-Your Local, Intelligent, and Privacy-First Novel Rewriting Studio.
+<div align="center">
+  <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Rocket.png" width="100px" />
 
-NovelForge AI 是一个专为长篇小说创作者和编辑设计的本地化智能工作台。它不仅仅是一个文本编辑器，更是一个集成了 RAG（检索增强生成）、多模态 AI 协作（Writer/Reviewer）和 自动化工作流 的生产力工具。
+  <h1>Re:Novel<br> 
+  文境重塑</h1>
+  <p>
+    以记忆之名，重塑故事之境。
+  </p>
+
+  <p>
+    <a href="https://github.com/yourname/repo/graphs/contributors">
+      <img src="https://img.shields.io/github/contributors/yourname/repo?style=flat-square&color=orange" alt="contributors" />
+    </a>
+    <a href="https://github.com/yourname/repo/network/members">
+      <img src="https://img.shields.io/github/forks/yourname/repo?style=flat-square&color=blue" alt="forks" />
+    </a>
+    <a href="https://github.com/yourname/repo/stargazers">
+      <img src="https://img.shields.io/github/stars/yourname/repo?style=flat-square&color=red" alt="stars" />
+    </a>
+  </p>
+</div>
+
+
+Your Local, Intelligent, and Privacy-First Novel Rewriting Studio.
 
 🌟 核心特性 (Features)
 1. 🧠 全局记忆与一致性 (RAG Memory)
