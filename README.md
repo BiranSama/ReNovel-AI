@@ -8,10 +8,10 @@
   </p>
 
   <p>
-    <a href="https://github.com/yourname/repo/graphs/contributors">
+    <a href="https://github.com/BiranSama/NovelForge-AI--/graphs/contributors">
       <img src="https://img.shields.io/github/contributors/yourname/repo?style=flat-square&color=orange" alt="contributors" />
     </a>
-    <a href="https://github.com/yourname/repo/network/members">
+    <a href="https://github.com/BiranSama/NovelForge-AI--/network/members">
       <img src="https://img.shields.io/github/forks/yourname/repo?style=flat-square&color=blue" alt="forks" />
     </a>
     <a href="https://github.com/yourname/repo/stargazers">
