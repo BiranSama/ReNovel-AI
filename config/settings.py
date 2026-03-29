@@ -29,6 +29,10 @@ class Settings:
     server_port: int = 8080
     debug: bool = False
     
+    log_level: str = "INFO"
+    log_format: str = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    log_date_format: str = "%H:%M:%S"
+    
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -38,6 +42,9 @@ class Settings:
             default_model=os.getenv("NOVELFORGE_MODEL", "gpt-4o"),
             server_port=int(os.getenv("NOVELFORGE_PORT", "8080")),
             debug=os.getenv("NOVELFORGE_DEBUG", "false").lower() == "true",
+            log_level=os.getenv("NOVELFORGE_LOG_LEVEL", "INFO"),
+            log_format=os.getenv("NOVELFORGE_LOG_FORMAT", "%(asctime)s [%(levelname)s] %(name)s: %(message)s"),
+            log_date_format=os.getenv("NOVELFORGE_LOG_DATE_FORMAT", "%H:%M:%S"),
         )
     
     @classmethod

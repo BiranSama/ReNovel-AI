@@ -6,18 +6,37 @@ from typing import Optional
 
 init(autoreset=True)
 
+_LEVEL_MAP = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
 
-def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+
+def get_logger(
+    name: str,
+    level: int = None,
+    format_str: str = None,
+    date_format: str = None,
+) -> logging.Logger:
+    from config.settings import settings
+    
+    if level is None:
+        level = _LEVEL_MAP.get(settings.log_level.upper(), logging.INFO)
+    if format_str is None:
+        format_str = settings.log_format
+    if date_format is None:
+        date_format = settings.log_date_format
+    
     logger = logging.getLogger(name)
     logger.setLevel(level)
     
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(level)
-        formatter = logging.Formatter(
-            '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-            datefmt='%H:%M:%S'
-        )
+        formatter = logging.Formatter(format_str, datefmt=date_format)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
     
