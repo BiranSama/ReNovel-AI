@@ -22,6 +22,9 @@
     <a href="https://github.com/BiranSama/ReNovel-AI/blob/main/LICENSE">
       <img src="https://img.shields.io/github/license/BiranSama/ReNovel-AI?style=flat-square&color=green" alt="license" />
     </a>
+    <a href="https://github.com/BiranSama/ReNovel-AI/releases">
+      <img src="https://img.shields.io/github/v/release/BiranSama/ReNovel-AI?style=flat-square&color=purple" alt="release" />
+    </a>
   </p>
 </div>
 
@@ -51,9 +54,10 @@
 ## 🌟 核心特性 (Features)
 
 ### 1. 🧠 全局记忆与一致性 (RAG Memory)
-告别“吃书”，系统内置 **ChromaDB** 向量数据库，自动记忆全书内容。
+告别"吃书"，系统内置 **ChromaDB** 向量数据库，自动记忆全书内容。
 * **智能检索**：当你改写第 100 章时，AI 会自动检索参考第 1 章的伏笔、设定和人物关系。
-* **智能联想**：即使你只写了“那把剑”，系统也能联想到“生锈的铁剑”并提取相关设定。
+* **智能联想**：即使你只写了"那把剑"，系统也能联想到"生锈的铁剑"并提取相关设定。
+* **一致性检查**：独立的 Reviewer AI 检测 OOC（角色崩坏）或逻辑漏洞。
 
 ### 2. ✍️ 卡片流式编辑器 (Card-Flow Editor)
 * **平行对比**：左侧原文，右侧 AI 改写，段落级绝对对齐。
@@ -66,7 +70,7 @@
 | :--- | :--- |
 | **Writer (作家)** | 负责根据你的指令进行改写、润色、扩写。 |
 | **Reviewer (总监)** | 独立的审校 AI。检查 OOC（角色崩坏）或逻辑漏洞。 |
-| **Chat (助手)** | 右侧常驻助手，随时回答“这一章讲了什么？”或“主角第一次出场是在哪？”。 |
+| **Chat (助手)** | 右侧常驻助手，随时回答"这一章讲了什么？"或"主角第一次出场是在哪？"。 |
 
 ### 4. ⚡ 自动化工作流 (Batch Workflow)
 * **全书精修**：一键启动流水线，自动遍历全书逐章改写。
@@ -157,9 +161,9 @@ pip install -e .
 
 **1. 导入与分章**
 
-  点击右上角 “导入”，拖入 .txt 小说文件。
+  点击右上角 "导入"，拖入 .txt 小说文件。
 
-  系统会自动识别“第X章”或纯文本标题，并将小说切分为章节存入数据库。
+  系统会自动识别"第X章"或纯文本标题，并将小说切分为章节存入数据库。
 
   导入时系统会自动进行一次全书向量化，大文件请耐心等待。
   
@@ -167,7 +171,7 @@ pip install -e .
 
   在左侧书架选择一章。
 
-  在顶部输入指令（例如：“把这段对话写得更幽默”）。
+  在顶部输入指令（例如："把这段对话写得更幽默"）。
 
   点击段落中间的魔法棒。
 
@@ -175,11 +179,11 @@ pip install -e .
 
   **3. 全书自动化精修**
 
-  点击顶部的 “批量任务” 按钮。
+  点击顶部的 "批量任务" 按钮。
 
   选择范围（全书 / 继续进度）。
 
-  勾选 “创建副本”（强烈推荐）。
+  勾选 "创建副本"（强烈推荐）。
 
   点击启动，观察 AI 自动工作。
   
@@ -190,24 +194,85 @@ pip install -e .
 | Frontend | NiceGUI (Vue/FastAPI) |
 | Database | SQLite (Metadata) + ChromaDB (Vector) |
 | AI Core | LangChain |
+| DI Framework | dependency_injector |
 | Processing | RapidFuzz, Tiktoken |
 | Editor | CodeMirror |
 
+## 🏗️ 架构设计 (Architecture)
+
+本项目采用 **领域驱动设计 (DDD)** 四层架构：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Interfaces Layer                          │
+│         (Controllers, Views, ViewModels, Web App)            │
+├─────────────────────────────────────────────────────────────┤
+│                   Application Layer                          │
+│              (Services, DTOs, Use Cases)                     │
+├─────────────────────────────────────────────────────────────┤
+│                     Domain Layer                             │
+│           (Entities, Repositories, Value Objects)            │
+├─────────────────────────────────────────────────────────────┤
+│                 Infrastructure Layer                         │
+│    (Database, LLM Gateway, RAG Pipeline, Memory System)      │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## 📂 目录结构
 ```
-NovelForge/
-├── data/                 # 用户数据 (已在 .gitignore 中忽略)
-│   ├── projects/         # SQLite 数据库 (.db)
-│   ├── vectordb/         # ChromaDB 向量索引
-│   └── presets/          # 角色卡与预设
+ReNovel-AI/
+├── config/                    # 配置与提示词
+│   ├── prompts/               # 各模块 Prompt 模板 (YAML)
+│   ├── settings.py            # 全局设置
+│   └── prompt_manager.py      # Prompt 管理器
+├── data/                      # 用户数据 (已在 .gitignore 中忽略)
+│   ├── projects/              # SQLite 数据库 (.db)
+│   ├── vectordb/              # ChromaDB 向量索引
+│   └── presets/               # 角色卡与预设
 ├── src/
-│   ├── ai/               # LLM 交互与 RAG 引擎
-│   ├── core/             # 项目管理与文件解析
-│   ├── ui/               # 界面布局与组件
-│   └── utils/            # 日志与工具类
-├── main.py               # 启动入口
-└── requirements.txt      # 依赖清单
+│   ├── adapters/              # 外部适配器
+│   ├── application/           # 应用服务层
+│   │   ├── dto/               # 数据传输对象
+│   │   └── services/          # 业务服务
+│   ├── di/                    # 依赖注入容器
+│   ├── domain/                # 领域层 (DDD 核心)
+│   │   ├── entities/          # 领域实体
+│   │   └── repositories/      # 仓储接口
+│   ├── infrastructure/        # 基础设施层
+│   │   ├── database/          # 数据库实现
+│   │   ├── llm/               # LLM 网关与限流
+│   │   ├── memory/            # 记忆与一致性检查
+│   │   └── rag/               # RAG 检索增强
+│   ├── interfaces/            # 接口层
+│   │   ├── controllers/       # 控制器
+│   │   ├── views/             # 视图组件
+│   │   └── web/               # Web 应用
+│   ├── shared/                # 共享类型与异常
+│   └── utils/                 # 工具函数
+├── tests/                     # 测试用例 (97 tests)
+│   ├── unit/                  # 单元测试
+│   └── integration/           # 集成测试
+├── main.py                    # 启动入口
+└── pyproject.toml             # 项目配置
 ```
+
+## 🔧 开发 (Development)
+
+### 运行测试
+```bash
+pytest tests/ -v
+```
+
+### 代码质量
+```bash
+ruff check src/
+mypy src/
+```
+
+## 📝 更新日志 (Changelog)
+
+查看 [CHANGELOG.md](CHANGELOG.md) 了解版本更新历史。
+
 ## 🤝 贡献 (Contributing)
 
 欢迎提交 Issue 或 Pull Request！如果你有新的脑洞，请随时告诉我。这是我首次通过git上传仓库
