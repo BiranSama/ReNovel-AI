@@ -94,37 +94,64 @@
 
 > [!IMPORTANT]
 > **Windows 用户请注意**：你需要安装 C++ Build Tools 以编译向量库依赖。
+> 下载地址: https://visualstudio.microsoft.com/visual-cpp-build-tools/
 
 ### 安装步骤
 
 **1. 克隆仓库**
 ```bash
-git clone [https://github.com/BiranSama/ReNovel-AI.git](https://github.com/BiranSama/ReNovel-AI.git)
-cd NovelForge-AI--
+git clone https://github.com/BiranSama/ReNovel-AI.git
+cd ReNovel-AI
 ```
-**2. 创建虚拟环境 (推荐)**
+
+**2. 一键安装 (推荐)**
 
 # Windows
 ```bash
-python -m venv venv
-.\venv\Scripts\activate
+双击运行 setup.bat
 ```
 # macOS / Linux
 ```bash
-python3 -m venv venv
+chmod +x setup.sh
+./setup.sh
+```
+
+**3. 配置 API Key**
+
+启动程序后，点击右上角 ⚙️ 设置 (Settings) 图标，填入你的 OpenAI 或 Google Gemini API Key。
+
+**4. 启动！**
+```bash
+# Windows
+venv\Scripts\activate
+python main.py
+
+# macOS / Linux
 source venv/bin/activate
-```
-**3. 安装依赖**
-```bash
-pip install -r requirements.txt
-```
-**4. 配置APIkey**  启动程序后，点击右上角 ⚙️ 设置 (Settings) 图标，填入你的 OpenAI 或 Google Gemini API Key。 (可选：将 .env.example 重命名为 .env 并填入默认 Key)
-
-
-**5. 启动！**
-```bash
 python main.py
 ```
+
+<details>
+<summary>📖 手动安装 (高级用户)</summary>
+
+```bash
+# 创建虚拟环境
+python -m venv venv
+
+# 激活虚拟环境
+# Windows:
+venv\Scripts\activate
+# macOS / Linux:
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 或使用 pyproject.toml (推荐)
+pip install -e .
+```
+
+</details>
 
 ## 📖 使用指南
 
