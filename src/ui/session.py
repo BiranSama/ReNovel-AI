@@ -44,7 +44,8 @@ class Session:
         self.state = state or AppState()
         self._renderer = None
         self.graph_view = None   # 图谱面板，由界面注册
-        self.memory_view = None  # 章节记忆面板，由界面注册
+        self.memory_view = None     # 章节记忆面板，由界面注册
+        self.character_view = None  # 角色档案面板，由界面注册
 
     @property
     def graph_engine(self):
@@ -136,8 +137,10 @@ class Session:
     # 2b. 章节记忆
     # ==========================
     async def refresh_memory_ui(self):
-        if self.memory_view:
-            try: await self.memory_view.refresh()
+        """刷新章节记忆和角色档案面板。"""
+        for view in (self.memory_view, self.character_view):
+            if not view: continue
+            try: await view.refresh()
             except RuntimeError: pass  # 页面已关闭
 
     async def bg_update_memory(self, pid, chapter_ids=None):

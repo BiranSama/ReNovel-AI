@@ -13,6 +13,7 @@ from src.services.batch import BatchService
 from src.services.chat import ChatService
 from src.services.graph import GraphService
 from src.services.chapter_memory import ChapterMemoryService
+from src.services.characters import CharacterService
 from src.core.chapter_memory_store import ChapterMemoryStore
 from src.utils.logger import ConsoleLogger as Log
 # 容错导入 GraphEngine
@@ -51,6 +52,7 @@ class Services:
         self.graph = GraphService(self.llm, self.settings, self.pm)
         self.chapter_store = ChapterMemoryStore()
         self.chapter_memory = ChapterMemoryService(self.llm, self.settings, self.pm, self.chapter_store)
+        self.characters = CharacterService(self.pm, self.chapter_store, self.graphs.get)
         self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store)
 
     async def init_db(self):

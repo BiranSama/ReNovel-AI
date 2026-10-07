@@ -34,7 +34,11 @@ def reply_for(messages: list[dict]) -> str:
     if "请整理这一章的记忆" in user:  # 章节记忆
         title = user.split("【章节标题】\n", 1)[1].split("\n", 1)[0] if "【章节标题】" in user else ""
         return json.dumps({"summary": f"{title}：张三与李四在咖啡馆叙旧。", "characters": ["张三", "李四"],
-                           "events": ["张三在咖啡馆遇见李四", "两人聊起往事"]}, ensure_ascii=False)
+                           "events": ["张三在咖啡馆遇见李四", "两人聊起往事"],
+                           "character_notes": [
+                               {"name": "张三", "aliases": ["三哥"], "traits": "念旧", "status": f"{title}末与李四和好"},
+                               {"name": "李四", "aliases": [], "traits": "沉稳", "status": ""}]},
+                          ensure_ascii=False)
     if "评分" in user:  # Reviewer 打分
         if REJECT_ALWAYS in user:
             return json.dumps({"score": 2, "suggestion": "节奏太慢"}, ensure_ascii=False)

@@ -50,3 +50,21 @@ def test_chapter_memories_are_built_and_shown(page, app):
     expect(item).to_contain_text("张三与李四在咖啡馆叙旧")
     item.click()
     expect(item.get_by_text("• 两人聊起往事")).to_be_visible()
+
+
+def test_character_profiles_can_be_viewed_and_edited(page, app):
+    page.get_by_role("tab", name="角色").click()
+    zhang = page.locator(".character-item", has_text="张三")
+    expect(zhang).to_contain_text("又名 三哥")
+    zhang.click()
+
+    dialog = page.locator(".character-dialog")
+    expect(dialog).to_contain_text("第一章 测试章节1：第一章 测试章节1末与李四和好")
+    expect(dialog).to_contain_text("张三 朋友 李四")  # 人物关系来自图谱
+    dialog.get_by_label("备注（改写和审校时会参考）").fill("左撇子")
+    dialog.get_by_role("button", name="保存").click()
+    expect(dialog).to_be_hidden()
+
+    con = sqlite3.connect(app.data_dir / "projects" / "novelforge.db")
+    assert con.execute("SELECT notes FROM character_overrides WHERE name = '张三'").fetchone() == ("左撇子",)
+    expect(page.locator(".character-item", has_text="张三").locator("i", has_text="edit")).to_be_visible()

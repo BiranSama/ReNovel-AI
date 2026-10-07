@@ -1,6 +1,7 @@
 """页面组装：每个浏览器标签页调用一次 create_layout，各部分的界面与交互在 src/ui/components 里。"""
 from nicegui import ui
 
+from src.ui.components.character_panel import CharacterPanel
 from src.ui.components.chat_panel import ChatPanel
 from src.ui.components.editor import Editor
 from src.ui.components.graph_panel import GraphPanel
@@ -50,12 +51,15 @@ def create_layout(services):
         with ui.tabs().classes('w-full text-gray-600') as tabs:
             chat_tab = ui.tab('助手', icon='chat')
             memory_tab = ui.tab('记忆', icon='auto_stories')
+            character_tab = ui.tab('角色', icon='people')
             graph_tab = ui.tab('图谱', icon='hub')
         with ui.tab_panels(tabs, value=chat_tab).classes('flex-grow h-full'):
             with ui.tab_panel(chat_tab).classes('p-0 flex flex-col w-full h-full'):
                 ChatPanel(session)
             with ui.tab_panel(memory_tab).classes('p-0 w-full h-full flex flex-col'):
                 MemoryPanel(session)
+            with ui.tab_panel(character_tab).classes('p-0 w-full h-full flex flex-col'):
+                CharacterPanel(session)
             with ui.tab_panel(graph_tab).classes('p-0 w-full h-full flex flex-col relative'):
                 GraphPanel(session)
 

@@ -7,7 +7,7 @@
 """
 from typing import Callable, Optional
 
-from src.core.chapter_memory_store import ChapterMemory, ChapterMemoryStore
+from src.core.chapter_memory_store import CharacterNote, ChapterMemory, ChapterMemoryStore
 from src.llm.prompts import assemble_system_prompt, join_sections, parse_json_object, section
 from src.services.graph import fingerprint
 from src.services.refine import excerpt
@@ -16,7 +16,9 @@ MIN_CHAPTER_CHARS = 50
 CHAPTER_EXCERPT_CHARS = 12000  # 超长章节取开头和结尾
 MAX_KNOWN_CHARACTERS = 60
 INSTRUCTION = ('请整理这一章的记忆，只输出 JSON：{"summary": "150 字以内的情节摘要", '
-               '"characters": ["出场角色，沿用已知角色的名字"], "events": ["关键事件：谁做了什么、结果如何，3 到 6 条"]}')
+               '"characters": ["出场角色，沿用已知角色的名字"], "events": ["关键事件：谁做了什么、结果如何，3 到 6 条"], '
+               '"character_notes": [{"name": "角色名", "aliases": ["本章出现的其他称呼"], '
+               '"traits": "本章体现的性格，没有则留空", "status": "本章结束时的状态变化（如受伤、离开、身份暴露），没有则留空"}]}')
 
 
 class MemoryParseError(ValueError):
@@ -32,7 +34,16 @@ def parse_memory(chapter_id: str, raw: str) -> ChapterMemory:
         value = data.get(key) or []
         return [str(v).strip() for v in value if str(v).strip()] if isinstance(value, list) else []
 
-    return ChapterMemory(chapter_id, data.get("summary", "").strip(), strings("characters"), strings("events"))
+    notes = []
+    for item in data.get("character_notes") or []:
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+        name = str(item["name"]).strip()
+        notes.append(CharacterNote(name, [str(a).strip() for a in aliases if str(a).strip() and str(a).strip() != name],
+                                   str(item.get("traits") or "").strip(), str(item.get("status") or "").strip()))
+    return ChapterMemory(chapter_id, data.get("summary", "").strip(), strings("characters"), strings("events"),
+                         notes=notes)
 
 
 class ChapterMemoryService:
