@@ -5,6 +5,7 @@
 - 每章记录内容指纹，内容没变的章节下次不再重复调用模型（真正的增量更新）
 - 只从已保存的正文抽取：未采纳的改写草稿不会进入图谱
 """
+import asyncio
 import hashlib
 import json
 import re
@@ -74,6 +75,7 @@ class GraphService:
         self.llm = llm
         self.settings = settings
         self.projects = projects
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def extract(self, engine, text: str, chapter_index: int, chapter_id: Optional[str] = None) -> int:
         """从一段文本抽取关系写入图谱，返回新增关系数。
@@ -110,6 +112,13 @@ class GraphService:
         章节内容变了：先撤销这一章以前抽取的关系再重新抽取，删掉或改写的情节不会继续作为事实留在图谱里。
         某段的返回内容无效时，这一章不记录指纹，下次更新会重试。
         """
+        async with self._lock(project_id):  # 多个标签页同时更新同一项目时依次进行，后者只处理仍有变化的章节
+            return await self._update(engine, project_id, on_progress, chapter_ids)
+
+    def _lock(self, project_id: str) -> asyncio.Lock:
+        return self._locks.setdefault(project_id, asyncio.Lock())
+
+    async def _update(self, engine, project_id, on_progress, chapter_ids) -> int:
         chapters = await self.projects.get_chapters(project_id)
         added = 0
         try:

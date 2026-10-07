@@ -25,12 +25,14 @@ class SettingsDialog:
         self.settings = settings
         self.llm = llm
         self.config = settings.draft()  # 界面绑定的是副本
+        self.baseline = settings.draft()  # 打开弹窗时的设置，保存时只写入改过的项
         self.preset_selects = {}
         self.dialog = None
 
     def open(self):
         if not self.dialog: return
         assign(self.config, self.settings.draft())  # 丢弃上次未保存的修改，并取到其他标签页保存的设置
+        self.baseline = self.settings.draft()
         for role_key, select in self.preset_selects.items():
             select.value = detect_preset(self.config[role_key])
         self.dialog.open()
@@ -131,6 +133,6 @@ class SettingsDialog:
             button.props(remove='loading')
 
     def save_and_close(self):
-        self.settings.apply(self.config)
+        self.settings.apply(self.config, self.baseline)
         ui.notify('✅ 配置已保存', type='positive')
         self.dialog.close()

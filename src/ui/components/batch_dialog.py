@@ -7,7 +7,8 @@ SCOPES = {'current': '本章', 'all': '全书', 'resume': '继续上次进度'}
 async def open_batch_dialog(session):
     state, services = session.state, session.services
     if not state.current_project_id: return ui.notify('请先导入', type='warning')
-    if state.is_batch_running: return ui.notify('已有批量任务在运行', type='warning')
+    if state.is_batch_running or services.batch.is_running(state.current_project_id):
+        return ui.notify('这个项目已有批量任务在运行（可能在另一个标签页）', type='warning')
     chapters = await services.pm.get_chapters(state.current_project_id)
     remaining = await services.batch.remaining_chapters(state.current_project_id)
     conf = {'scope': 'current', 'create_backup': True}

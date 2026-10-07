@@ -171,3 +171,24 @@ def test_empty_chapter_is_skipped_without_error(setup):
     assert asyncio.run(pm.get_chapter_content("missing")) is None
     outcome = asyncio.run(BatchService(pm, FakeRefine()).run(pid, ids[:1]))
     assert outcome.chapters_done == 1 and not outcome.error
+
+
+def test_same_project_cannot_run_two_batches_at_once(setup):
+    """两个标签页同时对同一项目跑批量：第二个直接返回错误，不会互相覆盖。"""
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+
+    class Slow(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            await asyncio.sleep(0.05)
+            return await super().refine(request)
+
+    service = BatchService(pm, Slow())
+
+    async def both():
+        return await asyncio.gather(service.run(pid, ids[:1]), service.run(pid, ids[:1]))
+
+    first, second = asyncio.run(both())
+    assert first.chapters_done == 1 and not first.error
+    assert second.error and second.chapters_done == 0
+    assert not service.is_running(pid)  # 结束后可以再跑

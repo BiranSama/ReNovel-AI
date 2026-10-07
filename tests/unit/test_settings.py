@@ -84,3 +84,18 @@ def test_resolve_role_on_unsaved_config():
     assert inherits_writer(config, "chat") and resolve_role(config, "chat")["api_key"] == "sk-w"
     config["chat"]["api_key"] = "sk-c"
     assert not inherits_writer(config, "chat") and resolve_role(config, "chat")["api_key"] == "sk-c"
+
+
+def test_saving_only_writes_fields_changed_in_this_dialog():
+    """两个标签页同时打开设置：各自保存时只写入自己改过的项，不会用旧值覆盖对方的修改。"""
+    settings = AppSettings(MemoryConfig())
+    tab_a, base_a = settings.draft(), settings.draft()
+    tab_b, base_b = settings.draft(), settings.draft()
+
+    tab_a["writer"]["model"] = "deepseek-chat"
+    settings.apply(tab_a, base_a)
+    tab_b["review_mode"] = "auto"
+    settings.apply(tab_b, base_b)
+
+    assert settings.config["writer"]["model"] == "deepseek-chat"
+    assert settings.config["review_mode"] == "auto"

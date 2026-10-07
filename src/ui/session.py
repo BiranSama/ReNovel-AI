@@ -211,8 +211,10 @@ class Session:
             await self.services.pm.update_chapter_content(cid, txt)
             if pid:
                 await self.services.rag.aindex_chapter(pid, cid, txt)
-                # 已建立图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）
-                if self.graph_engine and self.graph_engine.is_built():
+                # 已建立图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）。
+                # 用被保存项目的图谱：向量化期间用户可能已经切换到了别的项目
+                engine = self.services.graphs.get(pid)
+                if engine and engine.is_built():
                     asyncio.create_task(self.bg_build_graph(pid, {cid}))
             ui.notify('✅ 已保存（记忆已更新）')
 

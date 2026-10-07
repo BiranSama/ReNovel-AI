@@ -91,6 +91,20 @@ def inherits_writer(config: dict, role_key: str) -> bool:
     return role_key != "writer" and needs_api_key(config[role_key]) and not needs_api_key(config["writer"])
 
 
+def changes(draft: dict, baseline: dict) -> dict:
+    """draft 相对 baseline 改动过的项（嵌套 dict 逐层比较）。"""
+    result = {}
+    for key, val in draft.items():
+        old = baseline.get(key)
+        if isinstance(val, dict) and isinstance(old, dict):
+            nested = changes(val, old)
+            if nested:
+                result[key] = nested
+        elif val != old:
+            result[key] = val
+    return result
+
+
 def assign(target: dict, source: dict) -> None:
     """把 source 的内容就地写入 target，嵌套的 dict 保持原对象（界面绑定的仍是同一个对象）。"""
     for key, val in source.items():
@@ -112,9 +126,12 @@ class AppSettings:
         """供设置界面编辑的副本；保存前不影响正在使用的设置。"""
         return copy.deepcopy(self.config)
 
-    def apply(self, draft: dict) -> None:
-        """采用编辑后的设置并保存。数字框被清空时用默认值。"""
-        assign(self.config, draft)
+    def apply(self, draft: dict, baseline: dict | None = None) -> None:
+        """采用编辑后的设置并保存。数字框被清空时用默认值。
+
+        给出 baseline（打开弹窗时的设置）时只写入改过的项：另一个标签页在此期间保存的其他修改不会被旧值覆盖。
+        """
+        assign(self.config, changes(draft, baseline) if baseline is not None else draft)
         for key, low, high in (("review_threshold", 0, 10), ("max_review_retries", 0, 5)):
             value = self.config.get(key)
             self.config[key] = DEFAULT_FULL_CONFIG[key] if value is None else int(min(max(value, low), high))
