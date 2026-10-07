@@ -38,7 +38,7 @@ def create_layout(services):
     session = Session(services)
     ui.add_head_html(PAGE_CSS)
 
-    settings = SettingsDialog(services.settings, services.llm)
+    settings = SettingsDialog(services.settings, services.llm, services.rag)
     settings.create_ui()
     editor = Editor(session, ReviewDialog())
     import_dialog = create_import_dialog(session)

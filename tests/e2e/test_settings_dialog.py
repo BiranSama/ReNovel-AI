@@ -54,3 +54,17 @@ def test_review_options_are_saved(page, app):
 
     config = saved_config(app)
     assert (config["review_mode"], config["max_review_retries"], config["review_threshold"]) == ("auto", 1, 8)
+
+
+def test_embedding_settings_can_be_tested(page, app, fake_llm):
+    dialog = open_settings(page)
+    dialog.get_by_role("tab", name="记忆 (向量)").click()
+    memory = dialog.locator(".memory-settings")
+    expect(memory.get_by_label("Base URL")).to_have_value(f"{fake_llm}/v1")  # 测试配置用的是 API
+    memory.get_by_role("button", name="测试向量").click()
+    expect(page.locator(".q-notification", has_text="向量可用（64 维）")).to_be_visible()
+
+    memory.get_by_role("radio", name="本地模型（首次使用时下载，约 25MB，之后离线可用）").click()
+    expect(memory.get_by_label("下载镜像")).to_be_visible()
+    page.locator(".settings-dialog button:has(i:text-is('close'))").click()
+    assert saved_config(app)["embedding"]["provider"] == "api"  # 没保存

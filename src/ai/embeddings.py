@@ -154,6 +154,25 @@ class ApiEmbedder:
         return normalize(np.array(vectors)) if vectors else np.zeros((0, 0), np.float32)
 
 
+# 提供 /embeddings 的常用服务：(名称, Base URL, 推荐模型)
+API_PRESETS = [
+    ("OpenAI", "https://api.openai.com/v1", "text-embedding-3-small"),
+    ("硅基流动", "https://api.siliconflow.cn/v1", "BAAI/bge-m3"),
+    ("Ollama（本地）", "http://localhost:11434/v1", "bge-m3"),
+]
+
+
+def check_embedder(config: dict) -> int:
+    """按配置生成一条测试向量（本地模型会先下载），返回向量维度。失败时抛出 EmbeddingError。"""
+    try:
+        vectors = create_embedder(config).embed(["连接测试"])
+    except EmbeddingError:
+        raise
+    except Exception as error:  # 模型文件损坏、推理出错等
+        raise EmbeddingError(f"生成向量失败：{error}") from error
+    return int(vectors.shape[1])
+
+
 def create_embedder(config: dict) -> Embedder:
     """按设置里的 embedding 配置创建。"""
     if config.get("provider") == "api":

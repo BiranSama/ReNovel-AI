@@ -84,3 +84,11 @@ def test_resolve_role_on_unsaved_config():
     assert inherits_writer(config, "chat") and resolve_role(config, "chat")["api_key"] == "sk-w"
     config["chat"]["api_key"] = "sk-c"
     assert not inherits_writer(config, "chat") and resolve_role(config, "chat")["api_key"] == "sk-c"
+
+
+def test_embedding_defaults_to_local_model_and_keeps_user_choice():
+    embedding = AppSettings(MemoryConfig()).config["embedding"]
+    assert (embedding["provider"], embedding["local_model"], embedding["mirror"]) == \
+        ("local", "Xenova/bge-small-zh-v1.5", "https://hf-mirror.com")
+    custom = AppSettings(MemoryConfig({"embedding": {"provider": "api", "model": "bge-m3"}})).config["embedding"]
+    assert (custom["provider"], custom["model"], custom["mirror"]) == ("api", "bge-m3", "https://hf-mirror.com")
