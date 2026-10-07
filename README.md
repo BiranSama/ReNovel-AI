@@ -150,9 +150,6 @@ source venv/bin/activate
 
 # 安装依赖
 pip install -r requirements.txt
-
-# 或使用 pyproject.toml (推荐)
-pip install -e .
 ```
 
 </details>
@@ -193,85 +190,26 @@ pip install -e .
 | :--- | :--- |
 | Frontend | NiceGUI (Vue/FastAPI) |
 | Database | SQLite (Metadata) + ChromaDB (Vector) |
-| AI Core | LangChain |
-| DI Framework | dependency_injector |
-| Processing | RapidFuzz, Tiktoken |
-| Editor | CodeMirror |
-
-## 🏗️ 架构设计 (Architecture)
-
-本项目采用 **领域驱动设计 (DDD)** 四层架构：
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Interfaces Layer                          │
-│         (Controllers, Views, ViewModels, Web App)            │
-├─────────────────────────────────────────────────────────────┤
-│                   Application Layer                          │
-│              (Services, DTOs, Use Cases)                     │
-├─────────────────────────────────────────────────────────────┤
-│                     Domain Layer                             │
-│           (Entities, Repositories, Value Objects)            │
-├─────────────────────────────────────────────────────────────┤
-│                 Infrastructure Layer                         │
-│    (Database, LLM Gateway, RAG Pipeline, Memory System)      │
-└─────────────────────────────────────────────────────────────┘
-```
+| AI Core | LangChain (OpenAI 兼容接口 / Google Gemini) |
+| Knowledge Graph | NetworkX + ECharts |
 
 ## 📂 目录结构
 ```
 ReNovel-AI/
-├── config/                    # 配置与提示词
-│   ├── prompts/               # 各模块 Prompt 模板 (YAML)
-│   ├── settings.py            # 全局设置
-│   └── prompt_manager.py      # Prompt 管理器
-├── data/                      # 用户数据 (已在 .gitignore 中忽略)
-│   ├── projects/              # SQLite 数据库 (.db)
+├── data/                      # 用户数据 (运行 FirstTime.py 创建，已在 .gitignore 中忽略)
+│   ├── config.json            # 设置 (含 API Key，切勿提交)
+│   ├── projects/              # SQLite 数据库 + 知识图谱 JSON
 │   ├── vectordb/              # ChromaDB 向量索引
 │   └── presets/               # 角色卡与预设
 ├── src/
-│   ├── adapters/              # 外部适配器
-│   ├── application/           # 应用服务层
-│   │   ├── dto/               # 数据传输对象
-│   │   └── services/          # 业务服务
-│   ├── di/                    # 依赖注入容器
-│   ├── domain/                # 领域层 (DDD 核心)
-│   │   ├── entities/          # 领域实体
-│   │   └── repositories/      # 仓储接口
-│   ├── infrastructure/        # 基础设施层
-│   │   ├── database/          # 数据库实现
-│   │   ├── llm/               # LLM 网关与限流
-│   │   ├── memory/            # 记忆与一致性检查
-│   │   └── rag/               # RAG 检索增强
-│   ├── interfaces/            # 接口层
-│   │   ├── controllers/       # 控制器
-│   │   ├── views/             # 视图组件
-│   │   └── web/               # Web 应用
-│   ├── shared/                # 共享类型与异常
-│   └── utils/                 # 工具函数
-├── tests/                     # 测试用例 (97 tests)
-│   ├── unit/                  # 单元测试
-│   └── integration/           # 集成测试
-├── main.py                    # 启动入口
-└── pyproject.toml             # 项目配置
+│   ├── ai/                    # LLM 客户端、RAG 向量记忆
+│   ├── core/                  # 项目/章节管理、配置、知识图谱、酒馆角色卡解析
+│   ├── logic/handlers.py      # 业务流程 (导入、改写、审校、批量、聊天、图谱)
+│   ├── ui/                    # NiceGUI 界面 (主布局、面板、设置弹窗、全局状态)
+│   └── utils/logger.py        # 彩色控制台日志
+├── FirstTime.py               # 初始化数据目录
+└── main.py                    # 启动入口
 ```
-
-## 🔧 开发 (Development)
-
-### 运行测试
-```bash
-pytest tests/ -v
-```
-
-### 代码质量
-```bash
-ruff check src/
-mypy src/
-```
-
-## 📝 更新日志 (Changelog)
-
-查看 [CHANGELOG.md](CHANGELOG.md) 了解版本更新历史。
 
 ## 🤝 贡献 (Contributing)
 

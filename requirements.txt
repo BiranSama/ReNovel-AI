@@ -9,5 +9,6 @@ httpx
 python-dotenv
 Pillow
 colorama
+networkx
 tiktoken
 rapidfuzz
