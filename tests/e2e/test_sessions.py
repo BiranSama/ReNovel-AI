@@ -56,8 +56,10 @@ def test_two_tabs_do_not_interfere(browser, app):
 
     # A 改写并保存第一章，不影响 B 正在编辑的第二章
     tab_a.locator(".segment-card button:has(i:text-is('auto_fix_high'))").first.click()
-    tab_a.wait_for_function("() => !document.querySelector('.segment-card .q-btn .q-spinner')")
+    # 先等改写文字出现（此时加载动画一定已经显示），再等加载动画消失（审校完成、结果写回段落）；
+    # 反过来等的话，可能在加载动画出现之前就通过，审校还没结束就点了保存
     expect(tab_a.locator(".segment-card textarea").nth(1)).to_have_value(first_paragraph_prefix(REWRITE_MARK))
+    tab_a.wait_for_function("() => !document.querySelector('.segment-card .q-btn .q-spinner')")
     tab_a.get_by_role("button", name="保存").click()
     tab_a.get_by_text("已保存").wait_for()
 
