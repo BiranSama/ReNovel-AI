@@ -1,10 +1,10 @@
 import aiosqlite
 import uuid
-import re
 import json
 from datetime import datetime
 
 from src import paths
+from src.services.importer import split_chapters
 
 class ProjectManager:
     def __init__(self):
@@ -126,44 +126,14 @@ class ProjectManager:
                     return settings.get('last_polished_chapter_id')
         return None
 
-    # --- 导入逻辑 (保持不变) ---
-    def _clean_text(self, text: str) -> str:
-        return text.replace("\xa0", " ").replace("\u3000", " ").replace("\r\n", "\n").replace("\r", "\n")
-
-    async def import_content(self, project_id: str, content: str):
-        content = self._clean_text(content)
-        patterns = [
-            r'(?m)^\s*(?:第[0-9零一二三四五六七八九十百千]+[章卷]|Chapter\s*\d+|Vol\.\d+).*?$',
-            r'(?m)^\s*\d+\.\s+.{0,30}$',
-            r'(?m)^\s*[【\[]\s*.*?\s*[】\]].*?$',
-            r'(?m)^\s*(?!.*[。，？！……：]$).{2,20}\s*$' 
-        ]
-        matches = []
-        for p in patterns:
-            regex = re.compile(p)
-            temp_matches = list(regex.finditer(content))
-            if len(temp_matches) > 2:
-                matches = temp_matches
-                break
-        
+    # --- 导入 ---
+    async def import_content(self, project_id: str, content: str) -> int:
+        """按 split_chapters 切分并写入章节，返回章节数。"""
+        chapters = split_chapters(content)
         async with aiosqlite.connect(self.db_path) as db:
-            if not matches:
-                await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), project_id, "全文", 0, content))
-            else:
-                if matches[0].start() > 0:
-                    preface = content[:matches[0].start()].strip()
-                    if preface:
-                        await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
-                            (str(uuid.uuid4()), project_id, "【序章】", -1, preface))
-
-                for i, match in enumerate(matches):
-                    title = match.group().strip()
-                    start = match.end()
-                    end = matches[i+1].start() if i + 1 < len(matches) else len(content)
-                    chapter_content = content[start:end].strip()
-                    if len(chapter_content) < 10: continue
-                    await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
-                        (str(uuid.uuid4()), project_id, title, i, chapter_content))
+            await db.executemany(
+                "INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
+                [(str(uuid.uuid4()), project_id, c.title, c.order_index, c.content) for c in chapters],
+            )
             await db.commit()
-            return len(matches) if matches else 1
+        return len(chapters)

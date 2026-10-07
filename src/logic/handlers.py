@@ -4,6 +4,7 @@ from src.ui.state import app_state
 from src.llm import LLMError
 from src.llm.prompts import assemble_system_prompt
 from src.services.refine import RefineRequest
+from src.services.importer import UnsupportedEncoding, decode_text
 import asyncio
 import functools
 
@@ -223,7 +224,10 @@ async def handle_novel_upload(e, dialog):
     fname, cbytes = await _extract_upload_info(e)
     if not cbytes: return ui.notify("文件错误", type='negative')
     
-    content = cbytes.decode('utf-8', 'ignore')
+    try:
+        content = decode_text(cbytes)  # 自动识别 UTF-8 / GBK / Big5 等，不再静默丢字
+    except UnsupportedEncoding as err:
+        return ui.notify(str(err), type='negative')
     pid = await mgr.pm.create_project(fname, "Imported")
     await mgr.pm.import_content(pid, content)
     

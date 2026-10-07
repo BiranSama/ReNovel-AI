@@ -6,3 +6,4 @@ openai==3.26.0
 Pillow==12.3.0
 colorama==0.4.6
 networkx==3.6.1
+charset-normalizer==3.5.2
