@@ -86,7 +86,7 @@ def create_layout():
     # AI 逻辑
     # ==========================
     async def run_full_rewrite():
-        full_text = app_state.full_text_draft if app_state.view_mode == 'full' else h.merge_text()
+        full_text = h.current_text()
         if not full_text.strip(): return ui.notify('内容为空', type='warning')
 
         request = await h.refine_request(full_text, prompt_input.value or "精修")
@@ -126,8 +126,6 @@ def create_layout():
         if result.review and result.review.error:
             ui.notify(f'审校未完成：{result.review.error}', type='warning')
         ui.notify('全文重写完成')
-        if mgr.current_graph_engine:
-            asyncio.create_task(mgr.current_graph_engine.extract_from_text_stream(result.text, 999))
 
     async def run_seg_rewrite_ui(idx, button=None):
         seg = app_state.segments[idx]
@@ -256,7 +254,7 @@ def create_layout():
         with ui.row().classes('w-full bg-slate-100 p-4 border-t items-center gap-4 flex-none h-20 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]'):
             with ui.row().classes('gap-1'):
                 ui.button('保存', on_click=h.save_all).props('unelevated color=green-6 dense icon=save')
-                ui.button(icon='file_download', on_click=lambda: ui.download(h.merge_text().encode('utf-8'), 'export.txt')).props('flat round dense')
+                ui.button(icon='file_download', on_click=lambda: ui.download(h.current_text().encode('utf-8'), 'export.txt')).props('flat round dense')
             
             ui.separator().props('vertical')
             

@@ -41,10 +41,12 @@ class TavernParser:
     def _parse_json(self, path: str) -> dict:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # 兼容不同版本的 JSON 结构 (V1/V2)
-            if 'data' in data: 
-                return data['data'] # V2 结构
-            return data # V1 结构
+            return self._unwrap(data)
+
+    @staticmethod
+    def _unwrap(data: dict) -> dict:
+        """兼容不同版本的卡片结构：V2 / V3 的字段在 data 里，V1 直接在顶层。"""
+        return data['data'] if isinstance(data.get('data'), dict) else data
 
     def _parse_png(self, path: str) -> dict:
         """
@@ -60,13 +62,13 @@ class TavernParser:
             raw_data = info['chara']
             # Base64 解码
             decoded = base64.b64decode(raw_data).decode('utf-8')
-            return json.loads(decoded)
-            
+            return self._unwrap(json.loads(decoded))
+
         # 2. 尝试读取 'ccv3' (Character Card V3)
         elif 'ccv3' in info:
             raw_data = info['ccv3']
             decoded = base64.b64decode(raw_data).decode('utf-8')
-            return json.loads(decoded)
+            return self._unwrap(json.loads(decoded))
 
         raise ValueError("该图片不包含有效的角色元数据 (不是酒馆卡)")
 

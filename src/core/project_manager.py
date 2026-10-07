@@ -56,10 +56,13 @@ class ProjectManager:
             
             new_pid = str(uuid.uuid4())
             new_title = f"{original_project['title']} {suffix}"
-            
+            settings = json.loads(original_project['world_settings'] or '{}')
+            settings['backup_of'] = project_id              # 供“历史副本”列出
+            settings['last_polished_chapter_id'] = None     # 副本的批量进度从头开始
+
             await db.execute(
                 "INSERT INTO projects (id, title, description, created_at, world_settings) VALUES (?, ?, ?, ?, ?)",
-                (new_pid, new_title, original_project['description'], datetime.now().isoformat(), original_project['world_settings'])
+                (new_pid, new_title, original_project['description'], datetime.now().isoformat(), json.dumps(settings))
             )
             
             async with db.execute("SELECT * FROM chapters WHERE project_id = ?", (project_id,)) as cursor:
@@ -85,6 +88,11 @@ class ProjectManager:
             cursor = await db.execute("SELECT * FROM projects ORDER BY created_at DESC")
             return [dict(row) for row in await cursor.fetchall()]
             
+    async def get_backups(self, project_id: str):
+        """由该项目创建的副本，新的在前。"""
+        projects = await self.get_projects()
+        return [p for p in projects if json.loads(p.get('world_settings') or '{}').get('backup_of') == project_id]
+
     async def get_chapters(self, project_id: str):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

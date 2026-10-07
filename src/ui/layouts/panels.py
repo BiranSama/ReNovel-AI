@@ -16,7 +16,7 @@ def create_header(on_toggle_left, on_toggle_right, on_open_settings, on_open_imp
         app_state.ui['persona_label'] = ui.label('🎭 默认').classes('text-xs bg-slate-100 px-3 py-1 rounded-full mr-2')
         
         with ui.row().classes('gap-1'):
-            ui.button(icon='history').props('flat round dense color=slate-600').tooltip('副本').on('click', lambda: (app_state.ui['backup_dialog'].open(), h.refresh_backup_list(app_state.ui['backup_list'])))
+            ui.button(icon='history').props('flat round dense color=slate-600').tooltip('副本').on('click', h.open_backup_dialog)
             ui.button(icon='hub', on_click=on_toggle_right).props('flat round dense color=slate-600').tooltip('图谱')
             ui.button(icon='settings', on_click=on_open_settings).props('flat round dense color=slate-600')
             ui.button(icon='add', on_click=on_open_import).props('flat round dense color=indigo')

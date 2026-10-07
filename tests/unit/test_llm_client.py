@@ -137,19 +137,6 @@ def test_complete_joins_stream():
     assert asyncio.run(Recorder().client().complete(CONFIG, [])) == "你好，世界"
 
 
-def test_stream_rewrite_keeps_legacy_message_format():
-    rec = Recorder()
-
-    async def run():
-        return "".join([t async for t in rec.client().stream_rewrite("原文", "润色", {**CONFIG, "system_prompt": "S"})])
-
-    assert asyncio.run(run()) == "你好，世界"
-    assert rec.body()["messages"] == [
-        {"role": "system", "content": "S"},
-        {"role": "user", "content": "指令：润色\n\n内容：\n原文"},
-    ]
-
-
 def test_list_models():
     rec = Recorder(lambda request: httpx2.Response(200, json={"object": "list", "data": [
         {"id": "m1", "object": "model", "created": 0, "owned_by": "x"},

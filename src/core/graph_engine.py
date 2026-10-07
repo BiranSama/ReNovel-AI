@@ -1,9 +1,6 @@
 import networkx as nx
 import json
 import os
-import re
-import asyncio
-from src.llm import LLMClient
 from src.utils.logger import ConsoleLogger as Log
 from src import paths
 
@@ -12,7 +9,6 @@ class GraphEngine:
         self.project_id = project_id
         self.file_path = str(paths.graph_file(project_id))
         self.graph = nx.MultiDiGraph()
-        self.llm = LLMClient()
         self.load_graph()
 
     def load_graph(self):
@@ -32,26 +28,48 @@ class GraphEngine:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e: Log.system(f"图谱保存失败: {e}")
 
-    def add_relation(self, source: str, target: str, relation: str, 
-                    chapter_id: int, reveal_chapter: int = None, 
-                    is_secret: bool = False, desc: str = ""):
+    def add_relation(self, source: str, target: str, relation: str,
+                    chapter_id: int, reveal_chapter: int = None,
+                    is_secret: bool = False, desc: str = "") -> bool:
+        """添加关系；同一对实体间的同一种关系只保留一条（取最早出现 / 揭示的章节）。返回是否新增。"""
         if reveal_chapter is None: reveal_chapter = chapter_id
-        
-        # 强力清洗
-        source = str(source).strip(); target = str(target).strip()
-        if not source or not target: return
 
-        if source not in self.graph: self.graph.add_node(source)
-        if target not in self.graph: self.graph.add_node(target)
-        
+        # 强力清洗
+        source = str(source).strip(); target = str(target).strip(); relation = str(relation).strip()
+        if not source or not target or not relation: return False
+
+        if self.graph.has_edge(source, target):
+            for data in self.graph[source][target].values():
+                if data.get('relation') == relation:
+                    data['start_chapter'] = min(data.get('start_chapter', chapter_id), chapter_id)
+                    data['reveal_chapter'] = min(data.get('reveal_chapter', reveal_chapter), reveal_chapter)
+                    data['is_secret'] = bool(data.get('is_secret')) or bool(is_secret)
+                    if desc and not data.get('desc'): data['desc'] = desc
+                    return False
+
         self.graph.add_edge(
-            source, target, 
+            source, target,
             relation=relation,
             desc=desc,
             start_chapter=chapter_id,
-            reveal_chapter=reveal_chapter, 
-            is_secret=is_secret
+            reveal_chapter=reveal_chapter,
+            is_secret=bool(is_secret)
         )
+        return True
+
+    # --- 增量更新：记录每章抽取时的内容指纹，内容没变的章节不再重复分析 ---
+    def chapter_fingerprint(self, chapter_id: str):
+        return self.graph.graph.get('extracted', {}).get(chapter_id)
+
+    def mark_extracted(self, chapter_id: str, fingerprint: str):
+        self.graph.graph.setdefault('extracted', {})[chapter_id] = fingerprint
+
+    def is_built(self) -> bool:
+        return bool(self.graph.graph.get('extracted')) or self.graph.number_of_edges() > 0
+
+    def entity_names(self, limit: int = 50) -> list[str]:
+        """关联最多的实体名，供抽取时统一称呼。"""
+        return sorted(self.graph.nodes(), key=lambda n: self.graph.degree(n), reverse=True)[:limit]
 
     def get_visualization_data(self):
         if self.graph.number_of_nodes() == 0: return {"nodes": [], "links": []}
@@ -86,82 +104,3 @@ class GraphEngine:
         if mode == 'author': return True
         if current_chapter < edge_data.get('reveal_chapter', 0): return False
         return True
-
-    async def build_graph_from_chapters(self, chapters, status_callback=None, config=None):
-        total = len(chapters)
-        from src.core.managers import mgr
-        
-        for i, chapter in enumerate(chapters):
-            txt = chapter['content']
-            if len(txt) < 50: continue
-            if status_callback: status_callback(f"分析第 {i+1}/{total} 章...", (i / total))
-            
-            await self.extract_from_text_stream(txt, i+1, mgr.rag, config)
-            
-            if i % 3 == 0: self.save_graph()
-            await asyncio.sleep(0.5)
-
-        self.save_graph()
-        if status_callback: status_callback("完成", 1.0)
-
-    async def extract_from_text_stream(self, text: str, chapter_index: int, rag_engine=None, config=None):
-        if not config:
-            Log.system("GraphEngine: 无配置 (No Config)")
-            return
-
-        rag_context = ""
-        if rag_engine and len(text) > 200:
-            query = text[:100] + " " + text[-100:]
-            rag_context = rag_engine.search_context(query, self.project_id, n_results=3)
-            if rag_context:
-                rag_context = f"【参考资料】\n{rag_context}\n请参考此资料进行消歧。"
-
-        prompt = f"""
-知识图谱提取。请提取【实体-关系-实体】三元组。
-{rag_context}
-【JSON格式】
-[
-  {{ "source": "A", "relation": "关系", "target": "B", "desc": "描述", "is_reveal": false }}
-]
-【待分析文本】
-{text[:2500]} 
-"""     
-        ext_conf = config.copy()
-        # 强制使用 JSON Mode (如果模型支持，否则靠 Prompt)
-        ext_conf['system_prompt'] = "You are a data extractor. Output ONLY valid JSON list."
-        
-        try:
-            json_str = ""
-            async for token in self.llm.stream_rewrite(text, prompt, ext_conf):
-                json_str += token
-            
-            # === 调试日志：看看 AI 到底回了什么 ===
-            Log.system(f"RAW LLM RESP: {json_str[:100]}...")
-
-            # === 暴力清洗：寻找 [] 之间的内容 ===
-            match = re.search(r'\[.*\]', json_str, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-            else:
-                Log.system("未找到 JSON 列表结构")
-                return
-
-            triples = json.loads(json_str)
-            
-            count = 0
-            for t in triples:
-                if not isinstance(t, dict): continue
-                if 'source' not in t or 'target' not in t or 'relation' not in t: continue
-                
-                self.add_relation(
-                    t['source'], t['target'], t['relation'],
-                    chapter_id=chapter_index,
-                    reveal_chapter=chapter_index, 
-                    is_secret=t.get('is_reveal', False),
-                    desc=t.get('desc', '')
-                )
-                count += 1
-            Log.system(f"成功提取 {count} 条关系")
-            
-        except Exception as e:
-            Log.system(f"Graph 提取异常: {e}")

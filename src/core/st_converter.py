@@ -1,5 +1,5 @@
 import json
-from src.llm import LLMClient
+from src.llm import LLMClient, LLMError
 
 class STConverter:
     def __init__(self):
@@ -35,12 +35,9 @@ class STConverter:
 
         print("[Converter] 正在调用 AI 进行预设清洗...")
         
-        full_result = ""
         try:
             # 使用当前传入的 config (比如 writer 的配置) 来调用 AI
-            async for token in self.llm.stream_rewrite("请执行转换", conversion_prompt, config):
-                full_result += token
-        except Exception as e:
+            messages = [{"role": "user", "content": conversion_prompt}]
+            return (await self.llm.complete(config, messages)).strip()
+        except LLMError as e:
             return f"转换失败: {e}"
-
-        return full_result.strip()

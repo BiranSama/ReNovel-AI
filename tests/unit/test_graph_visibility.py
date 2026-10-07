@@ -55,3 +55,22 @@ def test_entities_in_text_are_found(engine):
 def test_context_for_text_respects_view(engine):
     assert engine.context_for_text("张三推门而入", current_chapter=5, mode="reader") == "- 张三 朋友 李四"
     assert "[🔒伏笔]" in engine.context_for_text("张三推门而入", current_chapter=5, mode="author")
+
+
+def test_same_relation_is_not_duplicated(engine):
+    assert engine.add_relation("张三", "李四", "朋友", chapter_id=7) is False
+    assert engine.add_relation("张三", "李四", "同学", chapter_id=7) is True  # 不同关系仍然保留
+    assert engine.graph.number_of_edges() == 3
+
+
+def test_duplicate_keeps_earliest_reveal_and_fills_missing_desc(engine):
+    engine.add_relation("张三", "王五", "生父", chapter_id=4, reveal_chapter=4, desc="另一种说法")
+    assert engine.query_context("张三", current_chapter=5, mode="reader").endswith("- 张三 生父 王五 (身世之谜)")
+
+
+def test_chapter_fingerprints_survive_reload(engine):
+    assert not GraphEngine("empty").is_built()
+    engine.mark_extracted("c1", "abc")
+    engine.save_graph()
+    reloaded = GraphEngine("p1")
+    assert reloaded.chapter_fingerprint("c1") == "abc" and reloaded.is_built()

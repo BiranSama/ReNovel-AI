@@ -17,6 +17,11 @@ class RAGEngine:
         print(f"[RAG] 数据库加载成功。现有记忆条目: {self.collection.count()}")
 
     def index_chapter(self, project_id: str, chapter_id: str, text: str):
+        # 先删掉这一章已有的片段：章节变短或被清空时，旧内容不能留在记忆里继续被检索到
+        try:
+            self.collection.delete(where={"$and": [{"project_id": project_id}, {"chapter_id": chapter_id}]})
+        except Exception as e:
+            print(f"[RAG Error] 清理旧片段失败: {e}")
         if not text.strip(): return
         # 过滤短句，保留有意义的段落
         segments = [line.strip() for line in text.split('\n') if len(line.strip()) > 5]

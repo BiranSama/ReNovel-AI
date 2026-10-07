@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from src.llm import LLMError
+from src.services.graph import clone_graph
 from src.services.refine import RefineRequest
 
 DEFAULT_INSTRUCTION = "精修文本，保持原意，提升文笔。"
@@ -55,10 +56,11 @@ class BatchService:
         self.memory = memory      # RAGEngine，可选
 
     async def make_backup(self, project_id: str, suffix: str = BACKUP_SUFFIX) -> tuple[str, dict[str, str]]:
-        """复制项目（含向量记忆），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
+        """复制项目（含向量记忆与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
         backup_id = await self.projects.duplicate_project(project_id, suffix)
         if self.memory:
             self.memory.clone_project_memory(project_id, backup_id)
+        clone_graph(project_id, backup_id)
         originals = await self.projects.get_chapters(project_id)
         copies = await self.projects.get_chapters(backup_id)
         return backup_id, {o["id"]: c["id"] for o, c in zip(originals, copies)}

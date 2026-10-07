@@ -159,3 +159,27 @@ def test_chat_answers(page):
         f"() => [...document.querySelectorAll('.chat-ai')]"
         f".some(b => b.innerText.includes('{REWRITE_MARK}'))"
     )
+
+
+def test_backup_history_lists_and_creates_backups(page):
+    page.locator("header button:has(i:text-is('history'))").click()
+    dialog = page.locator(".q-dialog").filter(has_text="历史副本")
+    dialog.get_by_text("当前项目还没有副本").wait_for()
+    dialog.get_by_role("button", name="+ 创建副本").click()
+    dialog.get_by_text("novel.txt (批量副本) (副本)").wait_for()
+    page.keyboard.press("Escape")
+
+
+def test_download_exports_current_full_text_draft(page):
+    page.get_by_role("button", name="全文工作台").click()
+    draft = page.locator(".full-height-textarea textarea").nth(1)
+    draft.fill("导出的是编辑器里正在看的内容")
+    with page.expect_download() as download:
+        page.locator("button:has(i:text-is('file_download'))").click()
+    assert open(download.value.path(), encoding="utf-8").read() == "导出的是编辑器里正在看的内容"
+
+
+def test_clearing_full_text_and_saving_persists_empty_chapter(page, app):
+    page.locator(".full-height-textarea textarea").nth(1).fill("")
+    page.get_by_role("button", name="保存").click()
+    assert wait_until(lambda: chapter_content(app, "novel.txt (批量副本)", "第一章") == "", timeout=10)

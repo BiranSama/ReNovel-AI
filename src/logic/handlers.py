@@ -2,7 +2,6 @@ from nicegui import ui
 from src.core.managers import mgr, GraphEngine
 from src.ui.state import app_state
 from src.llm import LLMError
-from src.llm.prompts import assemble_system_prompt
 from src.services.refine import RefineRequest
 from src.services.importer import UnsupportedEncoding, decode_text
 from src.services.batch import BACKUP_SUFFIX, DEFAULT_INSTRUCTION
@@ -46,15 +45,16 @@ def split_text(text):
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     return [{'original': line, 'revised': ''} for line in lines]
 
+def current_text():
+    """编辑器里当前显示的正文（全文模式取草稿，分段模式取合并结果）。"""
+    return app_state.full_text_draft if app_state.view_mode == 'full' else merge_text()
+
 def merge_text():
     lines = []
     for seg in app_state.segments:
         content = seg['revised'] if seg['revised'] else seg['original']
         if content.strip(): lines.append(content)
     return "\n\n".join(lines)
-
-def assemble_prompt(role_key):
-    return assemble_system_prompt(mgr.settings.get_role_config(role_key), mgr.settings.is_nsfw_enabled())
 
 async def _extract_upload_info(e):
     filename = "unknown_file"
@@ -91,53 +91,27 @@ def refresh_graph_ui():
         app_state.ui['graph_chart'].options['series'][0]['links'] = data['links']
         app_state.ui['graph_chart'].update()
 
-async def bg_build_graph(pid, content, incremental=False):
-    if not GraphEngine: return
-    
-    g_conf = app_state.settings.get_role_config('graph')
-    if not g_conf.get('api_key'):
-        w_conf = app_state.settings.get_role_config('writer')
-        if w_conf.get('api_key'):
-            g_conf = w_conf.copy()
-            g_conf['prompt_blocks'] = app_state.settings.get_role_config('graph').get('prompt_blocks', {})
-        else:
-            ui.notify('错误：未配置 API Key', type='negative')
-            return
-
-    update_status("后台图谱构建中...", 0.1)
+async def bg_build_graph(pid, chapter_ids=None):
+    """后台更新图谱：只分析内容有变化的章节（可限定章节）。在后台任务中运行，进度显示在状态栏。"""
+    if not GraphEngine or app_state.graph_task_running: return
+    engine = mgr.current_graph_engine
+    if not engine or engine.project_id != pid: engine = GraphEngine(pid)
     app_state.graph_task_running = True
-    mgr.load_graph(pid)
-    
-    chapters = []
-    if '第' in content[:1000]: 
-        chapters = [{'title': f'Ch{i}', 'content': c} for i, c in enumerate(content.split('第')) if len(c) > 100]
-    if len(chapters) < 1:
-        chunk_size = 3000
-        for i in range(0, len(content), chunk_size):
-            chapters.append({'title': f'Part {i//chunk_size + 1}', 'content': content[i:i+chunk_size]})
-
-    update_status(f"正在分析 {len(chapters)} 个切片...", 0.1)
-
-    await mgr.current_graph_engine.build_graph_from_chapters(
-        chapters, 
-        lambda m, p: (update_status(m,p), refresh_graph_ui()), 
-        config=g_conf
-    )
-    
-    app_state.graph_task_running = False
-    update_status("✅ 图谱构建完成", 1.0)
+    update_status("图谱更新中...", 0.0)
+    try:
+        added = await mgr.graph.update(engine, pid, on_progress=lambda m, p: (update_status(m, p), refresh_graph_ui()),
+                                       chapter_ids=chapter_ids)
+        update_status(f"图谱已更新：新增 {added} 条关系", 1.0)
+    except LLMError as e:
+        update_status(f"图谱更新失败：{e}", 1.0)
+    finally:
+        app_state.graph_task_running = False
     refresh_graph_ui()
 
 async def update_graph_incrementally():
     if not app_state.current_project_id: return
-    ui.notify('全书扫描中...')
-    chs = await mgr.pm.get_chapters(app_state.current_project_id)
-    full_content = ""
-    for c in chs:
-        txt = await mgr.pm.get_chapter_content(c['id'])
-        full_content += f"第{c['title']}\n{txt}\n"
-    
-    asyncio.create_task(bg_build_graph(app_state.current_project_id, full_content, incremental=True))
+    ui.notify('正在分析有变化的章节...')
+    asyncio.create_task(bg_build_graph(app_state.current_project_id))
 
 # ==========================
 # 3. 项目与 IO
@@ -203,20 +177,22 @@ async def auto_load_latest_project():
     await refresh_project_list()
 
 async def save_all():
-    # 如果是全文模式，先同步回 segments
+    # 全文模式先同步回 segments；内容被清空时也要同步，才能保存空章节
     if app_state.view_mode == 'full':
-        if app_state.full_text_draft:
-            app_state.segments = split_text(app_state.full_text_draft)
-            if _renderer:
-                try: _renderer()
-                except RuntimeError: pass
-    
+        app_state.segments = split_text(app_state.full_text_draft or "")
+        if _renderer:
+            try: _renderer()
+            except RuntimeError: pass
+
     txt = merge_text()
     if app_state.current_chapter_id:
         await mgr.pm.update_chapter_content(app_state.current_chapter_id, txt)
-        # 实时 RAG 索引
-        if app_state.current_project_id: mgr.rag.index_chapter(app_state.current_project_id, app_state.current_chapter_id, txt)
-        ui.notify('✅ 已保存 (含RAG更新)')
+        if app_state.current_project_id:
+            mgr.rag.index_chapter(app_state.current_project_id, app_state.current_chapter_id, txt)
+            # 已建立图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）
+            if mgr.current_graph_engine and mgr.current_graph_engine.is_built():
+                asyncio.create_task(bg_build_graph(app_state.current_project_id, {app_state.current_chapter_id}))
+        ui.notify('✅ 已保存（记忆已更新）')
 
 # ==========================
 # 4. 文件处理
@@ -252,33 +228,41 @@ async def handle_novel_upload(e, dialog):
     await refresh_project_list()
     
     if should_build and GraphEngine:
-        await asyncio.sleep(1)
-        asyncio.create_task(bg_build_graph(pid, content))
+        asyncio.create_task(bg_build_graph(pid))
 
 async def create_backup():
     if not app_state.current_project_id: return
     ui.notify('备份中...')
-    nid = await mgr.pm.duplicate_project(app_state.current_project_id, "(副本)")
-    if nid:
-        if mgr.rag: mgr.rag.clone_project_memory(app_state.current_project_id, nid)
-        ui.notify('副本创建成功')
-        await refresh_project_list()
+    await mgr.batch.make_backup(app_state.current_project_id, "(副本)")
+    ui.notify('副本创建成功')
+    await refresh_project_list()
+    await refresh_backup_list()
 
-async def refresh_backup_list(container): pass # 兼容
+async def refresh_backup_list():
+    container = app_state.ui.get('backup_list')
+    if not container or not app_state.current_project_id: return
+    backups = await mgr.pm.get_backups(app_state.current_project_id)
+    container.clear()
+    with container:
+        if not backups: ui.label('当前项目还没有副本').classes('text-xs text-gray-400 p-2')
+        for p in backups:
+            with ui.row().classes('w-full items-center justify-between px-2 py-1 border-b no-wrap'):
+                with ui.column().classes('gap-0 min-w-0'):
+                    ui.label(p['title']).classes('text-sm truncate')
+                    ui.label(p['created_at'][:16].replace('T', ' ')).classes('text-xs text-gray-400')
+                ui.button('打开', on_click=lambda _, pid=p['id'], t=p['title']: open_backup(pid, t)).props('flat dense size=sm')
+
+async def open_backup_dialog():
+    app_state.ui['backup_dialog'].open()
+    await refresh_backup_list()
+
+async def open_backup(pid, title):
+    app_state.ui['backup_dialog'].close()
+    await switch_project(pid, title)
 
 # ==========================
 # 5. AI Workflow (核心)
 # ==========================
-async def generate_smart_query(target_text, context_prev):
-    prompt = f"Context: {context_prev[-300:]}\nTarget: {target_text}\nExtract 3 keywords."
-    kw = ""
-    try:
-        conf = app_state.settings.get_role_config('writer').copy()
-        conf['system_prompt'] = "Keyword Extractor" 
-        async for token in mgr.llm.stream_rewrite(target_text, prompt, conf): kw += token
-    except: return target_text
-    return kw.strip()
-
 async def refine_request(text, instr):
     return RefineRequest(
         text=text,
@@ -312,10 +296,6 @@ async def _atomic_rewrite_segment(seg, instr, dialog_callback=None):
     if result.review and result.review.error:
         ui.notify(f'审校未完成：{result.review.error}', type='warning')
     return result
-
-async def run_seg_logic(idx, instr, dialog_cb):
-    seg = app_state.segments[idx]
-    await _atomic_rewrite_segment(seg, instr, dialog_cb)
 
 # ==========================
 # Batch Task
@@ -398,31 +378,16 @@ async def start_batch_execution(conf, dlg):
 async def send_chat_msg():
     chat_input = app_state.ui.get('chat_input')
     if not chat_input: return ui.notify("输入框未就绪", type='warning')
-    msg = chat_input.value; chat_input.value = "" 
+    msg = chat_input.value; chat_input.value = ""
     if not msg: return
-    
+
     with app_state.ui['chat_container']: ui.label(msg).classes('chat-bubble chat-user')
     mode = app_state.ui['chat_mode'].value if app_state.ui['chat_mode'] else 'chapter'
-    
-    ctx = ""
-    if mode == 'chapter':
-        txt = merge_text()
-        k = await generate_smart_query(msg, txt[-500:])
-        rag_res = mgr.rag.search_context(k, app_state.current_project_id)
-        graph_res = mgr.current_graph_engine.query_context(k, 999, 'reader') if mgr.current_graph_engine else ""
-        ctx = f"【本章】\n{txt[:2000]}\n{rag_res}\n{graph_res}"
-    else:
-        k = await generate_smart_query(msg, "")
-        rag_res = mgr.rag.search_context(k, app_state.current_project_id)
-        graph_res = mgr.current_graph_engine.query_context(k, 999, 'reader') if mgr.current_graph_engine else ""
-        ctx = f"{rag_res}\n{graph_res}"
-        
-    sys = assemble_prompt('chat')
-    conf = app_state.settings.get_role_config('chat').copy(); conf['system_prompt'] = sys
-    
     with app_state.ui['chat_container']: bubble = ui.label('Thinking...').classes('chat-bubble chat-ai')
-    res = ""; 
+    res = ""
     try:
-        async for t in mgr.llm.stream_rewrite(f"{ctx}\n问：{msg}", "", conf):
+        async for t in mgr.chat.answer(msg, app_state.current_project_id, await _get_current_chapter_index(),
+                                       current_text(), mode):
             res += t; bubble.text = res
-    except: bubble.text = "Error"
+    except LLMError as e:
+        bubble.text = f"出错：{e}"

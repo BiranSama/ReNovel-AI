@@ -112,8 +112,10 @@ def test_empty_output_keeps_original_and_review_errors_are_counted(setup):
     assert outcome.review_errors == 2
 
 
-def test_backup_maps_chapters_and_leaves_original_untouched(setup):
+def test_backup_maps_chapters_and_leaves_original_untouched(setup, tmp_path, monkeypatch):
+    monkeypatch.setenv("RENOVEL_DATA_DIR", str(tmp_path))  # 副本会复制图谱文件（此处没有图谱）
     pm, pid = setup
+    asyncio.run(pm.save_progress(pid, chapter_ids(pm, pid)[0]))
     memory = FakeMemory()
     service = BatchService(pm, FakeRefine(), memory)
     backup, mapping = asyncio.run(service.make_backup(pid))
@@ -122,6 +124,10 @@ def test_backup_maps_chapters_and_leaves_original_untouched(setup):
     assert list(mapping) == original_ids and list(mapping.values()) == chapter_ids(pm, backup)
     assert memory.cloned == [(pid, backup)]
 
+    assert [p["id"] for p in asyncio.run(pm.get_backups(pid))] == [backup]
+    assert asyncio.run(pm.get_backups(backup)) == []
+
+    assert asyncio.run(pm.get_progress(backup)) is None  # 副本的批量进度从头开始
     asyncio.run(service.run(backup, [mapping[original_ids[0]]]))
     assert chapters(pm, backup)[0][1].startswith("改：")
     assert chapters(pm, pid)[0][1] == "甲一。\n甲二。"

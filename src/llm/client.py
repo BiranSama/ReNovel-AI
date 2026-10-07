@@ -128,12 +128,3 @@ class LLMClient:
             return [model.id for model in page.data]
         except (openai.OpenAIError, LLMError):
             return []
-
-    async def stream_rewrite(self, text: str, instruction: str, config: dict) -> AsyncIterator[str]:
-        """沿用旧版的消息格式。改写流程迁入服务层后，由服务自行组装 messages，再移除此方法。"""
-        messages = [
-            {"role": "system", "content": config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)},
-            {"role": "user", "content": f"指令：{instruction}\n\n内容：\n{text}"},
-        ]
-        async for token in self.stream(config, messages):
-            yield token

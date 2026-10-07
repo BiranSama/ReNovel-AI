@@ -7,6 +7,8 @@ from src.ai.rag_engine import RAGEngine
 from src.services.context import ContextBuilder
 from src.services.refine import RefinePipeline
 from src.services.batch import BatchService
+from src.services.chat import ChatService
+from src.services.graph import GraphService
 # 容错导入 GraphEngine
 try:
     from src.core.graph_engine import GraphEngine
@@ -30,9 +32,10 @@ class GlobalManagers:
         self.rag = RAGEngine()
         self.current_graph_engine = None # 当前项目的图谱引擎
         self.settings = AppSettings()  # 所有标签页共享
-        self.refine = RefinePipeline(
-            self.llm, self.settings, ContextBuilder(self.rag, lambda: self.current_graph_engine)
-        )
+        context = ContextBuilder(self.rag, lambda: self.current_graph_engine)
+        self.refine = RefinePipeline(self.llm, self.settings, context)
+        self.chat = ChatService(self.llm, self.settings, context)
+        self.graph = GraphService(self.llm, self.settings, self.pm)
         self.batch = BatchService(self.pm, self.refine, self.rag)
 
     async def init_db(self):
