@@ -206,8 +206,7 @@ ReNovel-AI/
 │   ├── llm/                   # 统一 LLM 客户端（OpenAI 兼容接口）与提示词组装
 │   ├── ai/                    # RAG 向量记忆
 │   ├── core/                  # 数据库读写、设置、知识图谱存储、酒馆角色卡解析
-│   ├── logic/handlers.py      # 界面事件处理（调用 services）
-│   ├── ui/                    # NiceGUI 界面 (主布局、面板、设置弹窗、全局状态)
+│   ├── ui/                    # NiceGUI 界面：主布局、面板、设置弹窗；session.py 为每个标签页的会话
 │   ├── utils/logger.py        # 彩色控制台日志
 │   └── paths.py               # 数据目录（开发 / exe / RENOVEL_DATA_DIR）
 ├── tests/                     # 单元测试 + 冒烟测试（假 LLM + 浏览器）

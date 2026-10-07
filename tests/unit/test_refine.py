@@ -71,7 +71,7 @@ class FakeGraph:
 
 
 def make_pipeline(llm, settings=None):
-    context = ContextBuilder(FakeMemory(), lambda: FakeGraph())
+    context = ContextBuilder(FakeMemory(), lambda project_id: FakeGraph())
     return RefinePipeline(llm, settings or make_settings(), context)
 
 

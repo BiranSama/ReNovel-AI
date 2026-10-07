@@ -1,3 +1,4 @@
+"""应用级服务：启动时创建一次，所有浏览器标签页共享。每个标签页自己的状态在 src/ui/session.py。"""
 from src import paths
 from src.core.project_manager import ProjectManager
 from src.llm import LLMClient
@@ -13,26 +14,33 @@ from src.services.graph import GraphService
 try:
     from src.core.graph_engine import GraphEngine
 except ImportError:
-    GraphEngine = None 
+    GraphEngine = None
 
-class GlobalManagers:
-    _instance = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(GlobalManagers, cls).__new__(cls)
-            cls._instance.init_modules()
-        return cls._instance
 
-    def init_modules(self):
+class GraphStore:
+    """按项目缓存图谱引擎：同一项目在所有标签页共享一份，切换项目不再影响其他标签页。"""
+
+    def __init__(self):
+        self._engines = {}
+
+    def get(self, project_id):
+        if not GraphEngine or not project_id:
+            return None
+        if project_id not in self._engines:
+            self._engines[project_id] = GraphEngine(project_id)
+        return self._engines[project_id]
+
+
+class Services:
+    def __init__(self):
         paths.ensure_dirs()
         self.pm = ProjectManager()
         self.llm = LLMClient()
         self.tavern = TavernParser()
         self.rag = RAGEngine()
-        self.current_graph_engine = None # 当前项目的图谱引擎
-        self.settings = AppSettings()  # 所有标签页共享
-        context = ContextBuilder(self.rag, lambda: self.current_graph_engine)
+        self.settings = AppSettings()
+        self.graphs = GraphStore()
+        context = ContextBuilder(self.rag, self.graphs.get)
         self.refine = RefinePipeline(self.llm, self.settings, context)
         self.chat = ChatService(self.llm, self.settings, context)
         self.graph = GraphService(self.llm, self.settings, self.pm)
@@ -41,13 +49,3 @@ class GlobalManagers:
     async def init_db(self):
         """在 app.on_startup 时调用"""
         await self.pm.init_db()
-
-    def load_graph(self, project_id):
-        """加载指定项目的图谱引擎"""
-        if GraphEngine:
-            self.current_graph_engine = GraphEngine(project_id)
-        else:
-            print("GraphEngine module not found.")
-
-# 全局单例
-mgr = GlobalManagers()

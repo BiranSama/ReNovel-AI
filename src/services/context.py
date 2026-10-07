@@ -23,7 +23,7 @@ class ContextBuilder:
     def __init__(
         self,
         memory: Optional[MemorySearch],
-        graph_provider: Callable[[], Optional[RelationGraph]] = lambda: None,
+        graph_provider: Callable[[Optional[str]], Optional[RelationGraph]] = lambda project_id: None,
         n_results: int = 5,
     ):
         self.memory = memory
@@ -33,7 +33,7 @@ class ContextBuilder:
     def gather(self, project_id: Optional[str], text: str, chapter_index: int, view: str = "reader") -> str:
         return join_sections(
             section("相关记忆", self._memories(project_id, text)),
-            section("人物关系", self._relations(text, chapter_index, view)),
+            section("人物关系", self._relations(project_id, text, chapter_index, view)),
         )
 
     def _memories(self, project_id: Optional[str], text: str) -> str:
@@ -45,6 +45,6 @@ class ContextBuilder:
         docs = [d for d in docs if d.strip() and d.strip() not in own][: self.n_results]
         return "\n".join(f"- {d}" for d in docs)
 
-    def _relations(self, text: str, chapter_index: int, view: str) -> str:
-        graph = self.graph_provider()
+    def _relations(self, project_id: Optional[str], text: str, chapter_index: int, view: str) -> str:
+        graph = self.graph_provider(project_id)
         return graph.context_for_text(text, chapter_index, view) if graph else ""
