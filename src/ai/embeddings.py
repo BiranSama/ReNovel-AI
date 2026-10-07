@@ -20,6 +20,8 @@ MIRRORS = {"https://hf-mirror.com": "hf-mirror.com（国内镜像）", "https://
 DEFAULT_API_MODEL = "text-embedding-3-small"
 MAX_TOKENS = 512
 BATCH_SIZE = 32
+# 不同服务的单条输入上限不同（bge-large-zh 只有 512 token）：统一截断，超长段落只取开头生成向量（原文照常保存）
+MAX_API_INPUT_CHARS = 500
 
 
 class EmbeddingError(Exception):
@@ -147,7 +149,8 @@ class ApiEmbedder:
         vectors = []
         try:
             for start in range(0, len(texts), BATCH_SIZE):
-                response = client.embeddings.create(model=self.model, input=texts[start:start + BATCH_SIZE])
+                batch = [t[:MAX_API_INPUT_CHARS] for t in texts[start:start + BATCH_SIZE]]
+                response = client.embeddings.create(model=self.model, input=batch)
                 vectors += [item.embedding for item in sorted(response.data, key=lambda d: d.index)]
         except openai.OpenAIError as error:
             raise EmbeddingError(f"向量 API 调用失败（{self.base_url}，模型 {self.model}）：{error}") from error

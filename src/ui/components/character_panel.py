@@ -11,16 +11,21 @@ def _split_names(text: str) -> list[str]:
 class CharacterPanel:
     def __init__(self, session):
         self.session = session
+        self.show_hidden = False
         with ui.row().classes('w-full p-2 border-b bg-gray-50 justify-between items-center'):
             ui.label('角色档案').classes('text-xs font-bold text-gray-500')
-            ui.label('来自章节记忆，点击查看与修订').classes('text-xs text-gray-400')
+            ui.switch('显示已隐藏', on_change=self._toggle_hidden).props('dense size=xs').classes('text-xs show-hidden')
         with ui.scroll_area().classes('flex-grow w-full'):
             self.container = ui.column().classes('w-full gap-1 p-2 character-list')
         session.character_view = self
 
+    async def _toggle_hidden(self, event):
+        self.show_hidden = bool(event.value)
+        await self.refresh()
+
     async def refresh(self):
         session = self.session
-        profiles = await session.services.characters.profiles(session.state.current_project_id)
+        profiles = await session.services.characters.profiles(session.state.current_project_id, self.show_hidden)
         self.container.clear()
         with self.container:
             if not profiles:
@@ -34,6 +39,8 @@ class CharacterPanel:
                             ui.label('又名 ' + '、'.join(profile.aliases)).classes('text-xs text-gray-500')
                         if profile.edited:
                             ui.icon('edit', size='xs').classes('text-indigo-400').tooltip('已手动修订')
+                        if profile.hidden:
+                            ui.label('已隐藏').classes('text-xs text-red-400')
                     ui.label(f'出场 {len(profile.chapters)} 章').classes('text-xs text-gray-400')
 
     def open_profile(self, profile):
@@ -48,7 +55,7 @@ class CharacterPanel:
             if profile.traits and not profile.manual_traits:
                 ui.label(f'自动汇总：{profile.traits_text()}').classes('text-xs text-gray-500')
             notes = ui.textarea('备注（改写和审校时会参考）', value=profile.notes).classes('w-full').props('autogrow')
-            hidden = ui.checkbox('不是角色（误识别），隐藏')
+            hidden = ui.checkbox('不是角色（误识别），隐藏', value=profile.hidden)
 
             ui.label('状态变化').classes('font-bold text-sm mt-2')
             if not profile.statuses:

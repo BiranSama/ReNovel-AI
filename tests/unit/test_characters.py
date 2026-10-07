@@ -82,3 +82,10 @@ def test_service_reads_store_and_saves_overrides(tmp_path):
     profiles = by_name(asyncio.run(run()))
     assert profiles["李四"].notes == "卧底" and profiles["张三"].chapters == [1, 2]
     assert service.relations("p", profiles["张三"]) == ["- 张三 朋友 李四", "- 王五 仇人 三哥"]
+
+
+def test_hidden_profiles_can_be_listed_to_unhide():
+    overrides = {"王五": CharacterOverride("王五", hidden=True)}
+    assert "王五" not in by_name(build_profiles(CHAPTERS, memories(), overrides))
+    listed = build_profiles(CHAPTERS, memories(), overrides, include_hidden=True)
+    assert listed[-1].name == "王五" and listed[-1].hidden  # 隐藏的排在最后，可以取消隐藏

@@ -7,7 +7,7 @@ import numpy as np
 import openai
 import pytest
 
-from src.ai.embeddings import ApiEmbedder, EmbeddingError, LocalEmbedder, create_embedder
+from src.ai.embeddings import MAX_API_INPUT_CHARS, ApiEmbedder, EmbeddingError, LocalEmbedder, create_embedder
 
 CHROMA_MINILM = Path.home() / ".cache" / "chroma" / "onnx_models" / "all-MiniLM-L6-v2" / "onnx"
 
@@ -89,3 +89,15 @@ def test_create_embedder_from_settings():
     assert isinstance(create_embedder({}), LocalEmbedder)
     api = create_embedder({"provider": "api", "base_url": "http://localhost:11434/v1", "model": "bge-m3"})
     assert isinstance(api, ApiEmbedder) and api.name == "api:http://localhost:11434/v1|bge-m3"
+
+
+def test_api_inputs_are_truncated():
+    def respond(request):
+        texts = json.loads(request.content)["input"]
+        data = [{"object": "embedding", "index": i, "embedding": [1.0, 0.0]} for i in range(len(texts))]
+        return httpx2.Response(200, json={"object": "list", "data": data, "model": "m",
+                                          "usage": {"prompt_tokens": 1, "total_tokens": 1}})
+
+    embedder, requests = api_embedder(respond)
+    embedder.embed(["长" * 5000, "短"])
+    assert [len(t) for t in json.loads(requests[0].content)["input"]] == [MAX_API_INPUT_CHARS, 1]

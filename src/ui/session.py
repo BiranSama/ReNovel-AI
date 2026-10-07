@@ -144,23 +144,24 @@ class Session:
         pending = state.memory_pending.setdefault(pid, set())
         if chapter_ids is None: pending.add(None)  # None 表示全部章节
         else: pending.update(chapter_ids)
-        if state.memory_task_running: return
+        if state.memory_task_running: return  # 正在运行的任务会接着处理（包括其他项目的待办）
         state.memory_task_running = True
         try:
-            while state.memory_pending.get(pid):
-                wanted = state.memory_pending.pop(pid)
+            while state.memory_pending:
+                project = next(iter(state.memory_pending))
+                wanted = state.memory_pending.pop(project)
                 ids = None if None in wanted else wanted
                 self.update_status("章节记忆整理中...", 0.0)
-                updated = await self.services.chapter_memory.update(
-                    pid, on_progress=self.update_status, chapter_ids=ids)
-                self.update_status(f"章节记忆已更新：整理了 {updated} 章", 1.0)
-        except LLMError as e:
-            state.memory_pending.pop(pid, None)
-            self.update_status(f"章节记忆整理失败：{e}", 1.0)
+                try:
+                    updated = await self.services.chapter_memory.update(
+                        project, on_progress=self.update_status, chapter_ids=ids)
+                    self.update_status(f"章节记忆已更新：整理了 {updated} 章", 1.0)
+                except LLMError as e:
+                    self.update_status(f"章节记忆整理失败：{e}", 1.0)
+                if project == state.current_project_id:
+                    await self.refresh_memory_ui()
         finally:
             state.memory_task_running = False
-        if pid == state.current_project_id:
-            await self.refresh_memory_ui()
 
     async def update_memory_incrementally(self):
         if not self.state.current_project_id: return
@@ -432,5 +433,11 @@ class Session:
         if outcome.review_rejected:
             ui.notify(f'{outcome.review_rejected} 段重试后仍未通过审校，已保留最后一次改写', type='warning')
         self.update_status(f'批量：{summary}', 1.0)
+        if outcome.chapters_done:  # 改写过的章节：已整理过记忆 / 建立了图谱的项目随之更新（内容没变的章节不会调用模型）
+            if await self.services.chapter_store.has_any(pid):
+                asyncio.create_task(self.bg_update_memory(pid, set(ids)))
+            engine = self.services.graphs.get(pid)
+            if engine and engine.is_built():
+                asyncio.create_task(self.bg_build_graph(pid, set(ids)))
         if state.current_chapter_id and state.current_project_id == pid:
             await self.load_chapter(state.current_chapter_id)  # 刷新编辑器里的当前章
