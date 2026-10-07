@@ -43,10 +43,12 @@ class ChapterDraft:
 PREFACE_TITLE = "【序章】"
 WHOLE_TEXT_TITLE = "全文"
 
-# (标题模式, 至少匹配几次才采用)。“第X章”这类明确的标题出现一次就可信，
+# 分卷标题：本身通常没有正文，和章节标题一起作为分隔符
+VOLUME_PATTERN = re.compile(r'(?m)^\s*(?:第[0-9零一二三四五六七八九十百千]+卷|Vol\.?\s*\d+).*?$')
+# (章节标题模式, 至少匹配几次才采用)，按可信度排列。“第X章”这类明确的标题出现一次就可信，
 # 其余宽松模式容易误中普通短句，至少要出现 3 次
 HEADING_PATTERNS = [
-    (re.compile(r'(?m)^\s*(?:第[0-9零一二三四五六七八九十百千]+[章卷]|Chapter\s*\d+|Vol\.\d+).*?$'), 1),
+    (re.compile(r'(?m)^\s*(?:第[0-9零一二三四五六七八九十百千]+章|Chapter\s*\d+).*?$'), 1),
     (re.compile(r'(?m)^\s*\d+\.\s+.{0,30}$'), 3),
     (re.compile(r'(?m)^\s*[【\[]\s*.*?\s*[】\]].*?$'), 3),
     (re.compile(r'(?m)^\s*(?!.*[。，？！……：]$).{2,20}\s*$'), 3),
@@ -61,12 +63,21 @@ def _is_heading(match: re.Match) -> bool:
     return 0 < len(line) <= MAX_HEADING_LENGTH and not line.endswith(SENTENCE_ENDINGS)
 
 
+def _matches(pattern: re.Pattern, text: str) -> list[re.Match]:
+    return [m for m in pattern.finditer(text) if _is_heading(m)]
+
+
 def _find_headings(text: str) -> list[re.Match]:
+    """章节标题取最可信的一种格式，再并入分卷标题；没有章节标题时只按分卷切分。"""
+    volumes = _matches(VOLUME_PATTERN, text)
     for pattern, minimum in HEADING_PATTERNS:
-        matches = [m for m in pattern.finditer(text) if _is_heading(m)]
-        if len(matches) >= minimum:
-            return matches
-    return []
+        chapters = [m for m in _matches(pattern, text) if not VOLUME_PATTERN.match(m.group())]
+        if len(chapters) >= minimum:
+            by_start = {m.start(): m for m in volumes}
+            for m in chapters:  # 同一行既是卷标题又匹配宽松模式时只算一次
+                by_start.setdefault(m.start(), m)
+            return [by_start[k] for k in sorted(by_start)]
+    return volumes
 
 
 def split_chapters(raw_text: str) -> list[ChapterDraft]:

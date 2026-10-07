@@ -59,6 +59,7 @@ class ProjectManager:
             settings = json.loads(original_project['world_settings'] or '{}')
             settings['backup_of'] = project_id              # 供“历史副本”列出
             settings['last_polished_chapter_id'] = None     # 副本的批量进度从头开始
+            settings['polished_chapter_ids'] = []
 
             await db.execute(
                 "INSERT INTO projects (id, title, description, created_at, world_settings) VALUES (?, ?, ?, ?, ?)",
@@ -103,7 +104,7 @@ class ProjectManager:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("SELECT content FROM chapters WHERE id = ?", (chapter_id,))
             row = await cursor.fetchone()
-            return row[0] if row else ""
+            return (row[0] or "") if row else None  # 章节不存在返回 None；空章节返回 ""
 
     async def update_chapter_content(self, chapter_id: str, new_content: str):
         async with aiosqlite.connect(self.db_path) as db:
@@ -112,7 +113,7 @@ class ProjectManager:
 
     # --- 新增：进度存取 ---
     async def save_progress(self, project_id: str, chapter_id: str):
-        """记录当前精修到了哪一章"""
+        """记录批量精修已完成的章节（逐章累计，续跑时跳过这些章节）"""
         async with aiosqlite.connect(self.db_path) as db:
             # 先读取旧配置
             async with db.execute("SELECT world_settings FROM projects WHERE id = ?", (project_id,)) as cursor:
@@ -120,9 +121,18 @@ class ProjectManager:
                 current_settings = json.loads(row[0]) if row and row[0] else {}
             
             current_settings['last_polished_chapter_id'] = chapter_id
-            
+            done = current_settings.setdefault('polished_chapter_ids', [])
+            if chapter_id not in done: done.append(chapter_id)
+
             await db.execute("UPDATE projects SET world_settings = ? WHERE id = ?", (json.dumps(current_settings), project_id))
             await db.commit()
+
+    async def get_polished_chapter_ids(self, project_id: str) -> list:
+        """批量精修已完成的章节 id"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT world_settings FROM projects WHERE id = ?", (project_id,)) as cursor:
+                row = await cursor.fetchone()
+        return json.loads(row[0]).get('polished_chapter_ids', []) if row and row[0] else []
 
     async def get_progress(self, project_id: str):
         """获取上次精修的章节ID"""

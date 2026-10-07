@@ -6,7 +6,7 @@ import pytest
 from src.core.settings import AppSettings
 from src.llm import LLMError
 from src.services.context import ContextBuilder
-from src.services.refine import RefinePipeline, RefineRequest
+from src.services.refine import REVIEW_EXCERPT_CHARS, RefinePipeline, RefineRequest
 
 ROLES = ("writer", "reviewer", "analyzer")
 
@@ -135,19 +135,19 @@ def test_auto_retry_stops_once_review_passes():
 def test_manual_mode_asks_user_and_uses_their_feedback():
     asked = []
 
-    async def on_reject(review, text):
-        asked.append((review.score, text))
+    async def on_reject(review, text, can_retry):
+        asked.append((review.score, text, can_retry))
         return "让对白更幽默"
 
     llm = FakeLLM(reviews=['{"score": 3, "suggestion": "改"}', '{"score": 9}'])
     result = run(make_pipeline(llm, make_settings(review_mode="manual")), on_reject=on_reject)
-    assert asked == [(3.0, "改写1。")]
+    assert asked == [(3.0, "改写1。", True)]
     assert result.attempts == 2
     assert "让对白更幽默" in llm.prompts("writer")[1]
 
 
 def test_manual_mode_accepting_keeps_current_text():
-    async def accept(review, text):
+    async def accept(review, text, can_retry):
         return None
 
     llm = FakeLLM(reviews=['{"score": 3, "suggestion": "改"}'])
@@ -155,8 +155,30 @@ def test_manual_mode_accepting_keeps_current_text():
     assert (result.text, result.attempts, result.review.passed) == ("改写1。", 1, False)
 
 
+def test_manual_mode_still_asks_after_last_attempt_but_cannot_retry():
+    asked = []
+
+    async def keep_retrying(review, text, can_retry):
+        asked.append(can_retry)
+        return "再改改"
+
+    llm = FakeLLM(reviews=['{"score": 3, "suggestion": "改"}'])
+    result = run(make_pipeline(llm, make_settings(review_mode="manual")), on_reject=keep_retrying)
+    assert asked == [True, True, False]  # 最后一次未通过也要让用户看到，但不能再重写
+    assert (result.text, result.attempts, result.review.passed) == ("改写3。", 3, False)
+
+
+def test_reviewer_sees_bounded_excerpts():
+    llm = FakeLLM()
+    long_text = "甲" * 5000 + "中段" + "乙" * 5000
+    asyncio.run(make_pipeline(llm).review(RefineRequest(text=long_text, instruction="润色"), long_text))
+    prompt = llm.prompts("reviewer")[0]
+    assert "中段" not in prompt and "中间省略" in prompt
+    assert len(prompt) < 2 * REVIEW_EXCERPT_CHARS + 2000
+
+
 def test_auto_mode_never_asks_user():
-    async def fail(review, text):
+    async def fail(review, text, can_retry):
         raise AssertionError("auto 模式不应询问用户")
 
     result = run(make_pipeline(FakeLLM(reviews=['{"score": 3}', '{"score": 9}'])), on_reject=fail)

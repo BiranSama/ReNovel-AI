@@ -141,3 +141,33 @@ def test_remaining_chapters_resume_after_progress(setup):
 
     asyncio.run(service.run(pid, ids[:1]))
     assert [c["id"] for c in asyncio.run(service.remaining_chapters(pid))] == ids[1:]
+
+
+def test_resume_does_not_skip_chapters_before_a_single_chapter_run(setup):
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+    service = BatchService(pm, FakeRefine())
+    asyncio.run(service.run(pid, ids[1:2]))  # 只精修了第二章（“当前章”范围）
+    assert [c["id"] for c in asyncio.run(service.remaining_chapters(pid))] == [ids[0], ids[2]]
+
+
+def test_rejected_reviews_are_counted(setup):
+    pm, pid = setup
+
+    class Rejecting(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            return RefineResult(f"改：{request.text}", Review(4, "太平淡", False), 3)
+
+    outcome = asyncio.run(BatchService(pm, Rejecting()).run(pid, chapter_ids(pm, pid)[:1]))
+    assert (outcome.review_rejected, outcome.review_errors) == (2, 0)
+    assert chapters(pm, pid)[0][1] == "改：甲一。\n\n改：甲二。"  # 保留最后一次改写
+
+
+def test_empty_chapter_is_skipped_without_error(setup):
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+    asyncio.run(pm.update_chapter_content(ids[0], ""))
+    assert asyncio.run(pm.get_chapter_content(ids[0])) == ""
+    assert asyncio.run(pm.get_chapter_content("missing")) is None
+    outcome = asyncio.run(BatchService(pm, FakeRefine()).run(pid, ids[:1]))
+    assert outcome.chapters_done == 1 and not outcome.error

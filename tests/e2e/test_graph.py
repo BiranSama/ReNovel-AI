@@ -24,7 +24,7 @@ def test_build_graph_on_import(page, app):
         files = list((app.data_dir / "projects").glob("*_graph.json"))
         if files:
             graph = json.loads(files[0].read_text(encoding="utf-8"))
-            if len(graph["graph"].get("extracted", {})) == 5:  # 5 章都分析完（序章太短，不分析）
+            if len(graph["graph"].get("extracted", {})) == 6:  # 6 章都处理完（序章太短，记录指纹但不调用模型）
                 break
         time.sleep(1)
 

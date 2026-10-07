@@ -12,6 +12,17 @@ from src.llm import LLMError
 from src.llm.prompts import assemble_system_prompt, join_sections, parse_json_object, section
 from src.services.context import ContextBuilder
 
+# Reviewer 同时读原文和改写，各取前后两部分，避免全文模式下超出模型上下文
+REVIEW_EXCERPT_CHARS = 6000
+
+
+def excerpt(text: str, limit: int = REVIEW_EXCERPT_CHARS) -> str:
+    """超长文本保留开头和结尾，中间用省略标记代替。"""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n……（中间省略 {len(text) - 2 * half} 字）……\n{text[-half:]}"
+
 
 @dataclass
 class RefineRequest:
@@ -39,8 +50,9 @@ class RefineResult:
     attempts: int
 
 
-# 审校未通过时询问用户：返回修改意见则据此重写，返回 None 表示接受当前结果
-OnReject = Callable[[Review, str], Awaitable[Optional[str]]]
+# 审校未通过时询问用户：返回修改意见则据此重写，返回 None 表示接受当前结果。
+# 第三个参数 can_retry 为 False 表示已达最多重试次数，这次询问只能接受当前结果
+OnReject = Callable[[Review, str, bool], Awaitable[Optional[str]]]
 OnText = Callable[[str], None]
 
 
@@ -71,14 +83,17 @@ class RefinePipeline:
                 return RefineResult(text, None, attempts)
 
             review = await self.review(request, text)
-            if review.passed or attempts >= max_attempts:
+            if review.passed:
                 return RefineResult(text, review, attempts)
 
-            if ask_user:
-                decision = await on_reject(review, text)
-                if decision is None:
+            can_retry = attempts < max_attempts
+            if ask_user:  # 最后一次仍未通过也要让用户看到审校意见，再决定是否接受
+                decision = await on_reject(review, text, can_retry)
+                if decision is None or not can_retry:
                     return RefineResult(text, review, attempts)
                 feedback = decision
+            elif not can_retry:
+                return RefineResult(text, review, attempts)
             else:
                 feedback = review.suggestion
 
@@ -87,8 +102,8 @@ class RefinePipeline:
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
         prompt = join_sections(
             section("设定资料（作者视角）", references),
-            section("原文", request.text),
-            section("改写", candidate),
+            section("原文", excerpt(request.text)),
+            section("改写", excerpt(candidate)),
             section("改写指令", request.instruction),
             '请评分，只输出 JSON：{"score": 0 到 10 的整数, "suggestion": "具体修改建议"}',
         )

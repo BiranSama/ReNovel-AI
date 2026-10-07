@@ -162,7 +162,7 @@ class Session:
 
     async def load_chapter(self, cid):
         c = await self.services.pm.get_chapter_content(cid)
-        if c:
+        if c is not None:  # 空章节（内容被清空并保存）也要能选中
             self.state.current_chapter_id = cid
             self.state.segments = split_text(c)
             # 同步全文草稿
@@ -313,17 +313,28 @@ class Session:
             if seg.get('ui_component'): seg['ui_component'].value = text
 
         on_reject = None
+        asked = []
         if dialog_callback:
-            async def on_reject(review, text):
-                action = await dialog_callback(seg, {'score': review.score, 'suggestion': review.suggestion}, text)
+            async def on_reject(review, text, can_retry):
+                asked.append(review)
+                action = await dialog_callback(seg, {'score': review.score, 'suggestion': review.suggestion}, text,
+                                               can_retry=can_retry)
                 if action['action'] != 'retry': return None
                 return action.get('feedback') or review.suggestion
 
         result = await self.services.refine.refine(await self.refine_request(target, instr), on_text=show, on_reject=on_reject)
         seg['revised'] = result.text
-        if result.review and result.review.error:
-            ui.notify(f'审校未完成：{result.review.error}', type='warning')
+        self.notify_review(result.review, asked)
         return result
+
+    def notify_review(self, review, asked=()):
+        """审校失败或最终未通过时提示；用户已在弹窗里看过这次审校意见的不再重复提示。"""
+        if not review: return
+        if review.error:
+            ui.notify(f'审校未完成：{review.error}', type='warning')
+        elif not review.passed and review not in asked:
+            ui.notify(f'重试 {self.services.settings.get_max_review_retries()} 次后仍未通过审校（{review.score:g} 分），'
+                      f'已保留最后一次改写：{review.suggestion}', type='warning', multi_line=True)
 
     # ==========================
     # Batch Task
@@ -398,6 +409,8 @@ class Session:
             ui.notify(f'批量任务完成（{summary}）', type='positive')
         if outcome.review_errors:
             ui.notify(f'{outcome.review_errors} 段审校未完成，已保留改写结果', type='warning')
+        if outcome.review_rejected:
+            ui.notify(f'{outcome.review_rejected} 段重试后仍未通过审校，已保留最后一次改写', type='warning')
         self.update_status(f'批量：{summary}', 1.0)
         if state.current_chapter_id and state.current_project_id == pid:
             await self.load_chapter(state.current_chapter_id)  # 刷新编辑器里的当前章
