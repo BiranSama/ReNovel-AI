@@ -68,12 +68,14 @@ def create_layout():
                 warn_rev = ui.textarea().props('readonly borderless filled').classes('full-height-textarea bg-yellow-50 rounded')
         ui.label('💡 修改建议:').classes('font-bold text-indigo-500')
         warn_input = ui.textarea().classes('w-full bg-white border p-1 rounded').props('outlined dense rows=2')
-        with ui.row().classes('w-full justify-end'):
-            ui.button('AI 重写', on_click=lambda: resolve_warn('retry', warn_input.value)).props('outline color=indigo')
+        with ui.row().classes('w-full justify-end items-center'):
+            warn_limit = ui.label('已达到最多重试次数，可接受当前结果后手动修改').classes('text-sm text-gray-500')
+            warn_retry = ui.button('AI 重写', on_click=lambda: resolve_warn('retry', warn_input.value)).props('outline color=indigo')
             ui.button('强制通过', on_click=lambda: resolve_warn('accept')).props('unelevated color=grey')
 
-    async def show_warning_dialog(seg, r_data, rev_text, original_text=None):
+    async def show_warning_dialog(seg, r_data, rev_text, original_text=None, can_retry=True):
         nonlocal warning_future
+        warn_retry.set_visibility(can_retry); warn_limit.set_visibility(not can_retry)
         warn_score.text = f"{r_data.get('score', 0)}分"
         orig = original_text if original_text is not None else seg.get('original', '') if seg else ''
         warn_orig.value = orig; warn_rev.value = rev_text; warn_input.value = r_data.get('suggestion', '')
@@ -108,9 +110,13 @@ def create_layout():
             if app_state.view_mode == 'full' and app_state.ui.get('full_text_area'):
                 app_state.ui['full_text_area'].value = text
 
-        async def ask_user(review, text):
+        asked = []
+
+        async def ask_user(review, text, can_retry):
+            asked.append(review)
             action = await show_warning_dialog(
-                None, {'score': review.score, 'suggestion': review.suggestion}, text, original_text=full_text)
+                None, {'score': review.score, 'suggestion': review.suggestion}, text,
+                original_text=full_text, can_retry=can_retry)
             if action['action'] != 'retry': return None
             return action.get('feedback') or review.suggestion
 
@@ -123,8 +129,7 @@ def create_layout():
             app_state.segments = h.split_text(result.text); editor_panel.refresh()
         else:
             app_state.full_text_draft = result.text
-        if result.review and result.review.error:
-            ui.notify(f'审校未完成：{result.review.error}', type='warning')
+        h.notify_review(result.review, asked)
         ui.notify('全文重写完成')
 
     async def run_seg_rewrite_ui(idx, button=None):
@@ -136,7 +141,7 @@ def create_layout():
         seg['busy'] = True
         if button: button.props('loading')
         try:
-            await h._atomic_rewrite_segment(seg, instr, lambda s, r, t: show_warning_dialog(s, r, t))
+            await h._atomic_rewrite_segment(seg, instr, show_warning_dialog)
         except LLMError as e:
             ui.notify(f'改写失败：{e}', type='negative')
         finally:

@@ -74,3 +74,23 @@ def test_chapter_fingerprints_survive_reload(engine):
     engine.save_graph()
     reloaded = GraphEngine("p1")
     assert reloaded.chapter_fingerprint("c1") == "abc" and reloaded.is_built()
+
+
+def test_incoming_relations_are_included(engine):
+    assert engine.query_context("李四", current_chapter=5, mode="reader") == "- 张三 朋友 李四"
+    # 两个实体都出现时，同一条关系只列一次
+    assert engine.context_for_text("张三和李四", current_chapter=5, mode="reader") == "- 张三 朋友 李四"
+
+
+def test_remove_chapter_only_drops_relations_from_that_chapter(engine):
+    engine.add_relation("李四", "赵六", "师徒", chapter_id=2, from_chapter="c2")
+    engine.add_relation("张三", "赵六", "同门", chapter_id=2, from_chapter="c2")
+    engine.add_relation("张三", "赵六", "同门", chapter_id=3, from_chapter="c3")
+    engine.mark_extracted("c2", "abc")
+
+    engine.remove_chapter("c2")
+    assert not engine.graph.has_edge("李四", "赵六")
+    same_school = next(iter(engine.graph["张三"]["赵六"].values()))
+    assert same_school["start_chapter"] == 3 and set(same_school["sources"]) == {"c3"}
+    assert engine.graph.has_edge("张三", "李四")  # 没有来源记录的关系（手动添加 / 旧版本）不动
+    assert engine.chapter_fingerprint("c2") is None

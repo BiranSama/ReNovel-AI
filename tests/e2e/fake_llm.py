@@ -17,6 +17,7 @@ CALLS: list[dict] = []
 
 REWRITE_MARK = "【FAKE改写】"
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
+REJECT_ALWAYS = "【总是驳回】"  # 指令里带上它时，每次审校都给低分
 SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
 _rejected: set[str] = set()
 
@@ -30,6 +31,8 @@ def reply_for(messages: list[dict]) -> str:
             ensure_ascii=False,
         )
     if "评分" in user:  # Reviewer 打分
+        if REJECT_ALWAYS in user:
+            return json.dumps({"score": 2, "suggestion": "节奏太慢"}, ensure_ascii=False)
         if REJECT_ONCE in user and REJECT_ONCE not in _rejected:
             _rejected.add(REJECT_ONCE)
             return json.dumps({"score": 3, "suggestion": "形容词太多"}, ensure_ascii=False)

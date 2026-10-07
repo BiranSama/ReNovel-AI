@@ -93,3 +93,13 @@ def test_body_line_starting_with_chapter_word_is_not_a_heading(pm):
     text = ("第一章 开端\n" + BODY + "第三章里埋下的伏笔，此刻终于揭开。\n" + BODY
             + "第二章 发展\n" + BODY * 2 + "第三章 高潮\n" + BODY * 2)
     assert titles(pm, text) == ["第一章 开端", "第二章 发展", "第三章 高潮"]
+
+
+def test_volume_heading_with_numbered_chapters(pm):
+    text = "第一卷 风起\n1. 开始\n" + BODY + "2. 继续\n" + BODY + "3. 结束\n" + BODY
+    assert titles(pm, text) == ["1. 开始", "2. 继续", "3. 结束"]
+
+
+def test_volumes_without_chapter_headings_split_by_volume(pm):
+    text = "第一卷 风起\n" + BODY * 2 + "第二卷 云涌\n" + BODY * 2
+    assert titles(pm, text) == ["第一卷 风起", "第二卷 云涌"]

@@ -8,7 +8,7 @@ from src.core.graph_engine import GraphEngine
 from src.core.project_manager import ProjectManager
 from src.core.settings import AppSettings
 from src.llm import LLMError
-from src.services.graph import GraphService, clone_graph, parse_triples, pieces
+from src.services.graph import GraphParseError, GraphService, clone_graph, parse_triples, pieces
 
 BODY = "张三与李四在长安城外相遇，两人一见如故，约定次日同去拜访王五。" * 3
 
@@ -21,15 +21,18 @@ class StubConfig:
         pass
 
 
+FRIENDS = '好的：[{"source": "张三", "relation": "朋友", "target": "李四", "desc": "一见如故"}]'
+
+
 class FakeLLM:
-    def __init__(self, fail_after=None):
-        self.prompts, self.fail_after = [], fail_after
+    def __init__(self, fail_after=None, reply=FRIENDS):
+        self.prompts, self.fail_after, self.reply = [], fail_after, reply
 
     async def complete(self, config, messages):
         if self.fail_after is not None and len(self.prompts) >= self.fail_after:
             raise LLMError("额度不足")
         self.prompts.append(messages[-1]["content"])
-        return '好的：[{"source": "张三", "relation": "朋友", "target": "李四", "desc": "一见如故"}]'
+        return self.reply
 
 
 @pytest.fixture
@@ -55,7 +58,13 @@ def service(pm, llm):
 def test_parse_triples_filters_invalid_items():
     raw = '前言 [{"source": "甲", "relation": "师徒", "target": "乙"}, {"source": "缺字段"}, "坏"] 结尾'
     assert parse_triples(raw) == [{"source": "甲", "relation": "师徒", "target": "乙"}]
-    assert parse_triples("没有 JSON") == [] and parse_triples("[坏掉") == []
+    assert parse_triples("确实没有关系：[]") == []
+
+
+@pytest.mark.parametrize("raw", ["没有 JSON", "[坏掉"])
+def test_parse_triples_rejects_malformed_output(raw):
+    with pytest.raises(GraphParseError):
+        parse_triples(raw)
 
 
 def test_pieces_cover_whole_text():
@@ -111,3 +120,59 @@ def test_clone_graph_copies_file(env, tmp_path):
     clone_graph(pid, "copy")
     assert GraphEngine("copy").query_context("张三", 9, "author") == "- 张三 朋友 李四 (一见如故)"
     clone_graph("missing", "x")  # 没有图谱时不报错
+
+
+def test_changed_chapter_replaces_its_old_relations(env):
+    pm, pid = env
+    first, second = [c["id"] for c in asyncio.run(pm.get_chapters(pid))[:2]]
+    asyncio.run(service(pm, FakeLLM()).update(GraphEngine(pid), pid))
+
+    # 第一章改写后不再是“朋友”：第二章也提到这层关系，所以关系保留、起始章节后移
+    enemies = '[{"source": "张三", "relation": "仇人", "target": "李四"}]'
+    asyncio.run(pm.update_chapter_content(first, BODY + "两人反目。"))
+    engine = GraphEngine(pid)
+    asyncio.run(service(pm, FakeLLM(reply=enemies)).update(engine, pid))
+    relations = {d["relation"]: d for d in engine.graph["张三"]["李四"].values()}
+    assert set(relations) == {"朋友", "仇人"}
+    assert relations["朋友"]["start_chapter"] == 2 and relations["仇人"]["start_chapter"] == 1
+
+    # 第二章也改了：“朋友”不再有任何来源，从图谱里删除
+    asyncio.run(pm.update_chapter_content(second, BODY + "再无往来。"))
+    asyncio.run(service(pm, FakeLLM(reply=enemies)).update(engine, pid))
+    assert [d["relation"] for d in engine.graph["张三"]["李四"].values()] == ["仇人"]
+
+
+def test_cleared_chapter_drops_its_relations(env):
+    pm, pid = env
+    chapters = asyncio.run(pm.get_chapters(pid))
+    engine = GraphEngine(pid)
+    asyncio.run(service(pm, FakeLLM()).update(engine, pid))
+    for chapter in chapters[:2]:
+        asyncio.run(pm.update_chapter_content(chapter["id"], ""))
+    llm = FakeLLM()
+    asyncio.run(service(pm, llm).update(engine, pid))
+    assert llm.prompts == [] and engine.graph.number_of_nodes() == 0
+
+
+def test_malformed_response_is_retried_next_time(env):
+    pm, pid = env
+    engine = GraphEngine(pid)
+    asyncio.run(service(pm, FakeLLM(reply="抱歉，我无法完成")).update(engine, pid))
+    first = asyncio.run(pm.get_chapters(pid))[0]["id"]
+    assert engine.chapter_fingerprint(first) is None  # 没有记录指纹
+
+    llm = FakeLLM()
+    asyncio.run(service(pm, llm).update(engine, pid))
+    assert len(llm.prompts) == 2 and engine.chapter_fingerprint(first)
+
+
+def test_clone_graph_remaps_chapter_ids(env):
+    pm, pid = env
+    asyncio.run(service(pm, FakeLLM()).update(GraphEngine(pid), pid))
+    ids = [c["id"] for c in asyncio.run(pm.get_chapters(pid))]
+    clone_graph(pid, "copy", {old: f"new-{old}" for old in ids})
+
+    copy = GraphEngine("copy")
+    assert set(copy.graph.graph["extracted"]) == {f"new-{old}" for old in ids}
+    edge = next(iter(copy.graph["张三"]["李四"].values()))
+    assert set(edge["sources"]) == {f"new-{old}" for old in ids[:2]}

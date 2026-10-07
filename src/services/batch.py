@@ -46,7 +46,8 @@ class BatchOutcome:
     chapters_total: int
     stopped: bool = False
     error: str = ""
-    review_errors: int = 0  # 审校调用失败的段数（不影响改写结果）
+    review_errors: int = 0    # 审校调用失败的段数（不影响改写结果）
+    review_rejected: int = 0  # 重试到上限仍未通过审校的段数（保留最后一次改写）
 
 
 class BatchService:
@@ -60,17 +61,17 @@ class BatchService:
         backup_id = await self.projects.duplicate_project(project_id, suffix)
         if self.memory:
             self.memory.clone_project_memory(project_id, backup_id)
-        clone_graph(project_id, backup_id)
         originals = await self.projects.get_chapters(project_id)
         copies = await self.projects.get_chapters(backup_id)
-        return backup_id, {o["id"]: c["id"] for o, c in zip(originals, copies)}
+        mapping = {o["id"]: c["id"] for o, c in zip(originals, copies)}
+        clone_graph(project_id, backup_id, mapping)
+        return backup_id, mapping
 
     async def remaining_chapters(self, project_id: str) -> list[dict]:
-        """上次批量进度之后的章节；没有进度时返回全部。"""
+        """还没有被批量精修过的章节（按章累计，单独精修过的某一章不会让前面的章节被跳过）。"""
         chapters = await self.projects.get_chapters(project_id)
-        last = await self.projects.get_progress(project_id)
-        ids = [c["id"] for c in chapters]
-        return chapters[ids.index(last) + 1:] if last in ids else chapters
+        done = set(await self.projects.get_polished_chapter_ids(project_id))
+        return [c for c in chapters if c["id"] not in done]
 
     async def run(
         self,
@@ -87,7 +88,7 @@ class BatchService:
         outcome = BatchOutcome(project_id, 0, len(targets))
 
         for chapter in targets:
-            paragraphs = split_paragraphs(await self.projects.get_chapter_content(chapter["id"]))
+            paragraphs = split_paragraphs(await self.projects.get_chapter_content(chapter["id"]) or "")
             revised = []
             for done, paragraph in enumerate(paragraphs):
                 if should_stop():
@@ -104,6 +105,8 @@ class BatchService:
                     return outcome
                 if result.review and result.review.error:
                     outcome.review_errors += 1
+                elif result.review and not result.review.passed:
+                    outcome.review_rejected += 1
                 revised.append(result.text.strip() or paragraph)  # 模型返回空时保留原文
 
             content = join_paragraphs(revised)

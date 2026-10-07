@@ -30,8 +30,11 @@ class GraphEngine:
 
     def add_relation(self, source: str, target: str, relation: str,
                     chapter_id: int, reveal_chapter: int = None,
-                    is_secret: bool = False, desc: str = "") -> bool:
-        """添加关系；同一对实体间的同一种关系只保留一条（取最早出现 / 揭示的章节）。返回是否新增。"""
+                    is_secret: bool = False, desc: str = "", from_chapter: str = None) -> bool:
+        """添加关系；同一对实体间的同一种关系只保留一条（取最早出现 / 揭示的章节）。返回是否新增。
+
+        chapter_id 是关系出现的章节位置；from_chapter 是抽取出它的章节 id，用于章节改动后撤销旧关系。
+        """
         if reveal_chapter is None: reveal_chapter = chapter_id
 
         # 强力清洗
@@ -45,17 +48,28 @@ class GraphEngine:
                     data['reveal_chapter'] = min(data.get('reveal_chapter', reveal_chapter), reveal_chapter)
                     data['is_secret'] = bool(data.get('is_secret')) or bool(is_secret)
                     if desc and not data.get('desc'): data['desc'] = desc
+                    if from_chapter: data.setdefault('sources', {})[from_chapter] = [chapter_id, reveal_chapter]
                     return False
 
-        self.graph.add_edge(
-            source, target,
-            relation=relation,
-            desc=desc,
-            start_chapter=chapter_id,
-            reveal_chapter=reveal_chapter,
-            is_secret=bool(is_secret)
-        )
+        attrs = dict(relation=relation, desc=desc, start_chapter=chapter_id,
+                     reveal_chapter=reveal_chapter, is_secret=bool(is_secret))
+        if from_chapter: attrs['sources'] = {from_chapter: [chapter_id, reveal_chapter]}
+        self.graph.add_edge(source, target, **attrs)
         return True
+
+    def remove_chapter(self, chapter_id: str) -> None:
+        """撤销从某一章抽取的关系（章节内容改动后重新抽取前调用）；其他章节也提到的关系保留。"""
+        for u, v, key, data in list(self.graph.edges(keys=True, data=True)):
+            sources = data.get('sources')
+            if not sources or chapter_id not in sources: continue  # 手动添加或旧版本的关系不动
+            del sources[chapter_id]
+            if not sources:
+                self.graph.remove_edge(u, v, key)
+            else:
+                data['start_chapter'] = min(s for s, _ in sources.values())
+                data['reveal_chapter'] = min(r for _, r in sources.values())
+        self.graph.remove_nodes_from([n for n in list(self.graph.nodes()) if self.graph.degree(n) == 0])
+        self.graph.graph.get('extracted', {}).pop(chapter_id, None)
 
     # --- 增量更新：记录每章抽取时的内容指纹，内容没变的章节不再重复分析 ---
     def chapter_fingerprint(self, chapter_id: str):
@@ -83,21 +97,26 @@ class GraphEngine:
         return sorted(found, key=lambda n: self.graph.degree(n), reverse=True)[:limit]
 
     def context_for_text(self, text: str, current_chapter: int, mode: str = 'reader') -> str:
-        """文本中出现的各实体的关系，按视角过滤。"""
-        lines = [self.query_context(e, current_chapter, mode) for e in self.entities_in(text)]
-        return "\n".join(line for line in lines if line)
+        """文本中出现的各实体的关系，按视角过滤；两个实体都出现时同一条关系只列一次。"""
+        lines = []
+        for entity in self.entities_in(text):
+            for line in self.query_context(entity, current_chapter, mode).splitlines():
+                if line not in lines: lines.append(line)
+        return "\n".join(lines)
 
     def query_context(self, entity: str, current_chapter: int, mode: str = 'reader') -> str:
+        """与实体相关的关系：它指向别人的，以及别人指向它的。"""
         if entity not in self.graph: return ""
         lines = []
-        for neighbor in self.graph.successors(entity):
-            edges = self.graph[entity][neighbor]
-            for _, data in edges.items():
-                if self._check_visibility(data, current_chapter, mode):
-                    info = f"- {entity} {data.get('relation')} {neighbor}"
-                    if data.get('desc'): info += f" ({data.get('desc')})"
-                    if mode == 'author' and data.get('is_secret'): info += " [🔒伏笔]"
-                    lines.append(info)
+        edges = [(entity, n, d) for n in self.graph.successors(entity) for d in self.graph[entity][n].values()]
+        edges += [(n, entity, d) for n in self.graph.predecessors(entity) if n != entity
+                  for d in self.graph[n][entity].values()]
+        for src, dst, data in edges:
+            if self._check_visibility(data, current_chapter, mode):
+                info = f"- {src} {data.get('relation')} {dst}"
+                if data.get('desc'): info += f" ({data.get('desc')})"
+                if mode == 'author' and data.get('is_secret'): info += " [🔒伏笔]"
+                lines.append(info)
         return "\n".join(lines)
 
     def _check_visibility(self, edge_data, current_chapter, mode):
