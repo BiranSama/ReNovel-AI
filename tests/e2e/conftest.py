@@ -39,16 +39,17 @@ def _wait_http(url: str, proc: subprocess.Popen, timeout: float = 90) -> None:
     raise TimeoutError(f"等待超时: {url}")
 
 
-def _env() -> dict:
+def _env(extra: dict | None = None) -> dict:
     env = os.environ.copy()
     env.pop("PYTEST_CURRENT_TEST", None)  # 否则 NiceGUI 认为自己跑在 pytest 里而拒绝启动
     env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
+    env.update(extra or {})
     return env
 
 
-def _start(args: list[str], cwd: Path, log: Path) -> subprocess.Popen:
+def _start(args: list[str], cwd: Path, log: Path, env: dict | None = None) -> subprocess.Popen:
     return subprocess.Popen(
-        [sys.executable, *args], cwd=cwd, env=_env(),
+        [sys.executable, *args], cwd=cwd, env=_env(env),
         stdout=log.open("w"), stderr=subprocess.STDOUT, start_new_session=True,
     )
 
@@ -98,7 +99,7 @@ def app(fake_llm, tmp_path_factory):
 
     port = _free_port()
     log = root / "app.log"
-    proc = _start([str(HERE / "run_app.py"), str(port)], root, log)
+    proc = _start([str(HERE / "run_app.py"), str(port)], root, log, env={"RENOVEL_DATA_DIR": str(data)})
     app = App(url=f"http://127.0.0.1:{port}/", data_dir=data, log=log)
     try:
         _wait_http(app.url, proc)

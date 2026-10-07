@@ -10,8 +10,8 @@ from src.core.graph_engine import GraphEngine
 
 @pytest.fixture
 def engine(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)  # GraphEngine 使用相对路径 data/projects/
-    (tmp_path / "data" / "projects").mkdir(parents=True)
+    monkeypatch.setenv("RENOVEL_DATA_DIR", str(tmp_path))
+    (tmp_path / "projects").mkdir()
     engine = GraphEngine("p1")
     engine.add_relation("张三", "李四", "朋友", chapter_id=1)
     engine.add_relation("张三", "王五", "生父", chapter_id=1, reveal_chapter=10, is_secret=True, desc="身世之谜")

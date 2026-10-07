@@ -3,13 +3,12 @@ import chromadb
 from chromadb.utils import embedding_functions
 import uuid
 
-# 数据存储路径
-DB_DIR = "data/vectordb"
+from src import paths
 
 class RAGEngine:
     def __init__(self):
         print("[RAG] 正在初始化向量数据库 (ChromaDB)...")
-        self.client = chromadb.PersistentClient(path=DB_DIR)
+        self.client = chromadb.PersistentClient(path=str(paths.vectordb_dir()))
         self.emb_fn = embedding_functions.DefaultEmbeddingFunction()
         self.collection = self.client.get_or_create_collection(
             name="novel_memory",

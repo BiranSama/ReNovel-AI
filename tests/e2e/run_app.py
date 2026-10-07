@@ -1,6 +1,6 @@
 """在指定端口、关闭热重载的情况下启动应用（不改动 main.py）。
 
-用法: python run_app.py <port>，工作目录即应用的数据根目录（data/ 在其下）。
+用法: python run_app.py <port>，数据目录由环境变量 RENOVEL_DATA_DIR 指定。
 
 NiceGUI 3 的脚本模式会为每个客户端重新执行 sys.argv[0]，所以这里把它指向
 main.py：首次以非 __main__ 名执行以搭建界面（不触发其中的 ui.run），之后的

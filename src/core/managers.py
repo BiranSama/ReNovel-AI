@@ -1,3 +1,4 @@
+from src import paths
 from src.core.project_manager import ProjectManager
 from src.ai.llm_client import LLMClient
 from src.core.tavern_parser import TavernParser
@@ -18,6 +19,7 @@ class GlobalManagers:
         return cls._instance
 
     def init_modules(self):
+        paths.ensure_dirs()
         self.pm = ProjectManager()
         self.llm = LLMClient()
         self.tavern = TavernParser()

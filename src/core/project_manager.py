@@ -4,11 +4,11 @@ import re
 import json
 from datetime import datetime
 
-DB_PATH = "data/projects/novelforge.db"
+from src import paths
 
 class ProjectManager:
     def __init__(self):
-        self.db_path = DB_PATH
+        self.db_path = str(paths.db_file())
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:

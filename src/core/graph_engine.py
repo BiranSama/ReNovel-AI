@@ -5,11 +5,12 @@ import re
 import asyncio
 from src.ai.llm_client import LLMClient
 from src.utils.logger import ConsoleLogger as Log
+from src import paths
 
 class GraphEngine:
     def __init__(self, project_id: str):
         self.project_id = project_id
-        self.file_path = f"data/projects/{project_id}_graph.json"
+        self.file_path = str(paths.graph_file(project_id))
         self.graph = nx.MultiDiGraph()
         self.llm = LLMClient()
         self.load_graph()
