@@ -45,3 +45,13 @@ def test_graph_round_trips_through_disk(engine):
     data = reloaded.get_visualization_data()
     assert {n["name"] for n in data["nodes"]} == {"张三", "李四", "王五"}
     assert len(data["links"]) == 2
+
+
+def test_entities_in_text_are_found(engine):
+    assert engine.entities_in("这天张三遇见了王五。") == ["张三", "王五"]  # 按关联数排序
+    assert engine.entities_in("无关的句子") == []
+
+
+def test_context_for_text_respects_view(engine):
+    assert engine.context_for_text("张三推门而入", current_chapter=5, mode="reader") == "- 张三 朋友 李四"
+    assert "[🔒伏笔]" in engine.context_for_text("张三推门而入", current_chapter=5, mode="author")

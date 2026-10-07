@@ -4,6 +4,7 @@ from src.ui.state import app_state
 from src.ui.components.settings_dialog import SettingsDialog
 from src.ui.layouts.panels import create_header, create_left_drawer, create_right_drawer
 import src.logic.handlers as h
+from src.llm import LLMError
 import asyncio
 
 app.on_startup(mgr.init_db)
@@ -35,9 +36,9 @@ def create_layout():
     for key in list(app_state.ui.keys()):
         app_state.ui[key] = None
 
-    settings = SettingsDialog()
+    settings = SettingsDialog(mgr.settings)
     settings.create_ui() 
-    app_state.settings = settings
+    app_state.settings = mgr.settings
     
     # 注册渲染器
     def safe_refresh():
@@ -88,8 +89,11 @@ def create_layout():
         full_text = app_state.full_text_draft if app_state.view_mode == 'full' else h.merge_text()
         if not full_text.strip(): return ui.notify('内容为空', type='warning')
 
-        instr = prompt_input.value or "精修"
-        report = await h.run_analyzer(full_text, instr)
+        request = await h.refine_request(full_text, prompt_input.value or "精修")
+        try:
+            report = await h.run_analyzer(full_text, request.instruction)
+        except LLMError as e:
+            return ui.notify(f'军师分析失败：{e}', type='negative')
 
         with ui.dialog() as d, ui.card().classes('w-full max-w-4xl'):
             ui.label('军师报告').classes('text-lg font-bold text-purple')
@@ -98,58 +102,42 @@ def create_layout():
                 ui.button('取消', on_click=d.close).props('flat')
                 ui.button('执行', on_click=lambda: d.submit(True)).props('color=purple')
         if not await d: return
+        request.guidance = report
 
-        sys = h.assemble_prompt('writer')
-        conf = settings.get_role_config('writer').copy(); conf['system_prompt'] = sys
-        prompt = f"【建议】{report}\n【指令】{instr}\n【原文】\n{full_text}"
+        def show(text):
+            if app_state.view_mode == 'full' and app_state.ui.get('full_text_area'):
+                app_state.ui['full_text_area'].value = text
 
-        current_try = 0
-        while current_try < 3:
-            current_try += 1
-            new_text = ""
-            try:
-                if app_state.view_mode == 'full':
-                    app_state.full_text_draft = ""; 
-                    if app_state.ui.get('full_text_area'): app_state.ui['full_text_area'].value = ""
+        async def ask_user(review, text):
+            action = await show_warning_dialog(
+                None, {'score': review.score, 'suggestion': review.suggestion}, text, original_text=full_text)
+            if action['action'] != 'retry': return None
+            return action.get('feedback') or review.suggestion
 
-                async for t in mgr.llm.stream_rewrite(full_text, prompt, conf):
-                    new_text += t
-                    if app_state.view_mode == 'full' and app_state.ui.get('full_text_area'):
-                        app_state.ui['full_text_area'].value += t
+        try:
+            result = await mgr.refine.refine(request, on_text=show, on_reject=ask_user)
+        except LLMError as e:
+            return ui.notify(f'改写失败：{e}', type='negative')
 
-                if app_state.view_mode == 'segment':
-                    app_state.segments = h.split_text(new_text); editor_panel.refresh()
-                else:
-                    app_state.full_text_draft = new_text
-
-                if settings.is_reviewer_enabled():
-                    ui.notify('总监正在审核...', type='info')
-                    rev_sys = h.assemble_prompt('reviewer')
-                    rev_conf = settings.get_role_config('reviewer').copy(); rev_conf['system_prompt'] = rev_sys
-                    rev_res = ""
-                    async for t in mgr.llm.stream_rewrite("", f"原文:{full_text[:2000]}...\n改写:{new_text[:2000]}...\n请评分(JSON)", rev_conf): rev_res += t
-                    r_data = h.clean_json_response(rev_res)
-
-                    if r_data and r_data.get('score', 0) < settings.get_review_threshold():
-                        if settings.get_review_mode() == 'manual':
-                            res_action = await show_warning_dialog(None, r_data, new_text, original_text=full_text)
-                            if res_action['action'] == 'retry':
-                                prompt += f"\n\n【审校反馈】{res_action.get('feedback')}"
-                                continue
-                        else:
-                            prompt += f"\n\n【审校反馈】{r_data.get('suggestion')}"
-                            continue
-            except Exception as e: ui.notify(f'错误: {e}', type='negative'); break
-            break
-
+        if app_state.view_mode == 'segment':
+            app_state.segments = h.split_text(result.text); editor_panel.refresh()
+        else:
+            app_state.full_text_draft = result.text
+        if result.review and result.review.error:
+            ui.notify(f'审校未完成：{result.review.error}', type='warning')
         ui.notify('全文重写完成')
         if mgr.current_graph_engine:
-            asyncio.create_task(mgr.current_graph_engine.extract_from_text_stream(new_text, 999))
+            asyncio.create_task(mgr.current_graph_engine.extract_from_text_stream(result.text, 999))
 
     async def run_seg_rewrite_ui(idx):
         seg = app_state.segments[idx]
-        instr = seg.get('prompt_input', {}).value if seg.get('prompt_input') and hasattr(seg['prompt_input'], 'value') else (prompt_input.value or "润色")
-        await h._atomic_rewrite_segment(seg, instr, lambda s, r, t: show_warning_dialog(s, r, t))
+        # 段落自己的局部指令优先；为空时用底部的全局指令
+        local = (getattr(seg.get('prompt_input'), 'value', '') or '').strip()
+        instr = local or prompt_input.value or "润色"
+        try:
+            await h._atomic_rewrite_segment(seg, instr, lambda s, r, t: show_warning_dialog(s, r, t))
+        except LLMError as e:
+            ui.notify(f'改写失败：{e}', type='negative')
         if seg.get('ui_component'): seg['ui_component'].value = seg.get('revised', '')
 
     # ==========================

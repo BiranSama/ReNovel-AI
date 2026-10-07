@@ -15,6 +15,8 @@ app = FastAPI()
 CALLS: list[dict] = []
 
 REWRITE_MARK = "【FAKE改写】"
+REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
+_rejected: set[str] = set()
 
 
 def reply_for(messages: list[dict]) -> str:
@@ -26,6 +28,9 @@ def reply_for(messages: list[dict]) -> str:
             ensure_ascii=False,
         )
     if "评分" in user:  # Reviewer 打分
+        if REJECT_ONCE in user and REJECT_ONCE not in _rejected:
+            _rejected.add(REJECT_ONCE)
+            return json.dumps({"score": 3, "suggestion": "形容词太多"}, ensure_ascii=False)
         return json.dumps({"score": 9, "suggestion": "ok"}, ensure_ascii=False)
     if "Extract 3 keywords" in user:  # 检索关键词
         return "张三 李四 咖啡馆"
@@ -46,7 +51,7 @@ def calls():
 async def chat(req: Request):
     body = await req.json()
     messages = body["messages"]
-    CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"][:200]})
+    CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"]})
     text = reply_for(messages)
     created = int(time.time())
 

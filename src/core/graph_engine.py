@@ -59,6 +59,16 @@ class GraphEngine:
         links = [{"source": u, "target": v, "value": data.get('relation', ''), "lineStyle": {"width": 2 if data.get('is_secret') else 1}} for u, v, data in self.graph.edges(data=True)]
         return {"nodes": nodes, "links": links}
 
+    def entities_in(self, text: str, limit: int = 8) -> list[str]:
+        """文本中出现的图谱实体（两个字及以上），按关联数从多到少。"""
+        found = [n for n in self.graph.nodes() if len(str(n)) >= 2 and str(n) in text]
+        return sorted(found, key=lambda n: self.graph.degree(n), reverse=True)[:limit]
+
+    def context_for_text(self, text: str, current_chapter: int, mode: str = 'reader') -> str:
+        """文本中出现的各实体的关系，按视角过滤。"""
+        lines = [self.query_context(e, current_chapter, mode) for e in self.entities_in(text)]
+        return "\n".join(line for line in lines if line)
+
     def query_context(self, entity: str, current_chapter: int, mode: str = 'reader') -> str:
         if entity not in self.graph: return ""
         lines = []

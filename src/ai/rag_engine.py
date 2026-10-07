@@ -32,22 +32,26 @@ class RAGEngine:
         except Exception as e:
             print(f"[RAG Error] 存储失败: {e}")
 
-    def search_context(self, query: str, project_id: str, n_results=5) -> str:
+    def search(self, query: str, project_id: str, n_results=5) -> list[str]:
+        """按语义检索本项目的记忆片段，失败时返回空列表。"""
         try:
             results = self.collection.query(
                 query_texts=[query],
                 n_results=n_results,
                 where={"project_id": project_id} # 严格隔离
             )
-            if not results['documents'] or not results['documents'][0]: return ""
-            
-            retrieved_docs = results['documents'][0]
-            context_text = "\n".join([f"- {doc}" for doc in retrieved_docs])
-            print(f"[RAG] 🧠 联想到了 {len(retrieved_docs)} 条相关记忆")
-            return f"【前文剧情/相关记忆 (RAG)】：\n{context_text}\n"
+            docs = results['documents'][0] if results['documents'] else []
+            if docs: print(f"[RAG] 🧠 联想到了 {len(docs)} 条相关记忆")
+            return docs
         except Exception as e:
             print(f"[RAG Error] 搜索失败: {e}")
-            return ""
+            return []
+
+    def search_context(self, query: str, project_id: str, n_results=5) -> str:
+        docs = self.search(query, project_id, n_results)
+        if not docs: return ""
+        context_text = "\n".join([f"- {doc}" for doc in docs])
+        return f"【前文剧情/相关记忆 (RAG)】：\n{context_text}\n"
 
     def delete_project_memory(self, project_id: str):
         try:

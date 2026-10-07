@@ -2,7 +2,10 @@ from src import paths
 from src.core.project_manager import ProjectManager
 from src.llm import LLMClient
 from src.core.tavern_parser import TavernParser
+from src.core.settings import AppSettings
 from src.ai.rag_engine import RAGEngine
+from src.services.context import ContextBuilder
+from src.services.refine import RefinePipeline
 # 容错导入 GraphEngine
 try:
     from src.core.graph_engine import GraphEngine
@@ -25,6 +28,10 @@ class GlobalManagers:
         self.tavern = TavernParser()
         self.rag = RAGEngine()
         self.current_graph_engine = None # 当前项目的图谱引擎
+        self.settings = AppSettings()  # 所有标签页共享
+        self.refine = RefinePipeline(
+            self.llm, self.settings, ContextBuilder(self.rag, lambda: self.current_graph_engine)
+        )
 
     async def init_db(self):
         """在 app.on_startup 时调用"""

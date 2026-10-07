@@ -1,8 +1,10 @@
 from nicegui import ui
 from src.core.managers import mgr, GraphEngine
 from src.ui.state import app_state
+from src.llm import LLMError
+from src.llm.prompts import assemble_system_prompt
+from src.services.refine import RefineRequest
 import asyncio
-import json
 import functools
 
 # ==========================
@@ -50,21 +52,7 @@ def merge_text():
     return "\n\n".join(lines)
 
 def assemble_prompt(role_key):
-    if not app_state.settings: return ""
-    role_conf = app_state.settings.get_role_config(role_key)
-    blocks = role_conf.get('prompt_blocks', {})
-    if not blocks: return role_conf.get('system_prompt', '')
-    
-    is_nsfw = app_state.settings.is_nsfw_enabled()
-    safety = blocks.get('nsfw_override', '') if is_nsfw else blocks.get('safety', '')
-    return f"### Role\n{blocks.get('persona','')}\n### Task\n{blocks.get('objective','')}\n### Style\n{blocks.get('style','')}\n### Safety\n{safety}"
-
-def clean_json_response(text):
-    try:
-        start = text.find('{'); end = text.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(text[start:end])
-    except: pass
-    return None
+    return assemble_system_prompt(mgr.settings.get_role_config(role_key), mgr.settings.is_nsfw_enabled())
 
 async def _extract_upload_info(e):
     filename = "unknown_file"
@@ -286,96 +274,39 @@ async def generate_smart_query(target_text, context_prev):
     except: return target_text
     return kw.strip()
 
+async def refine_request(text, instr):
+    return RefineRequest(
+        text=text,
+        instruction=instr,
+        project_id=app_state.current_project_id,
+        chapter_index=await _get_current_chapter_index(),
+        persona=app_state.active_system_prompt or "",
+    )
+
 async def run_analyzer(text, instr):
     ui.notify('军师分析中...', type='info')
-    chap_idx = await _get_current_chapter_index()
-    rag_info = mgr.rag.search_context("核心冲突", app_state.current_project_id) if app_state.current_project_id else ""
-    graph_info = ""
-    if mgr.current_graph_engine:
-        kw = await generate_smart_query(text[:500], "")
-        graph_info = mgr.current_graph_engine.query_context(kw, chap_idx, mode='author') # 上帝视角
-    
-    prompt = f"【分析】\n指令：{instr}\n片段：{text[:800]}...\n设定：{rag_info}\n图谱：{graph_info}\n请输出简报：1.可行性 2.风险(OOC/伏笔) 3.建议"
-    sys = assemble_prompt('analyzer')
-    conf = app_state.settings.get_role_config('analyzer').copy(); conf['system_prompt'] = sys
-    res = ""
-    async for t in mgr.llm.stream_rewrite(text, prompt, conf): res += t
-    return res
+    return await mgr.refine.analyze(await refine_request(text, instr))
 
 async def _atomic_rewrite_segment(seg, instr, dialog_callback=None):
-    """原子重写：支持 UI 模式和 Batch 模式"""
+    """单段精修。dialog_callback 为空（批量）时审校不通过自动重试。Writer 失败抛 LLMError。"""
     target = seg['original'] or ""
     if not target.strip(): return
-    
-    chap_idx = await _get_current_chapter_index()
-    
-    # 1. 知识检索
-    rag_res = ""
-    keywords = ""
-    if app_state.current_project_id:
-        keywords = await generate_smart_query(target, "")
-        rag_res = mgr.rag.search_context(keywords, app_state.current_project_id)
-        
-    graph_res = ""
-    if mgr.current_graph_engine and keywords:
-        # Writer 只能用 Reader 视角
-        graph_res = mgr.current_graph_engine.query_context(keywords, chap_idx, mode='reader') 
 
-    # 2. Prompt
-    sys = assemble_prompt('writer')
-    if app_state.active_system_prompt: sys = f"{app_state.active_system_prompt}\n{sys}"
-    conf = app_state.settings.get_role_config('writer').copy(); conf['system_prompt'] = sys
-    
-    prompt = f"{rag_res}\n{graph_res}\n【目标】{target}\n【指令】{instr}"
-    
-    # 3. 执行 Writer
-    res = ""
-    try:
-        async for t in mgr.llm.stream_rewrite(target, prompt, conf):
-            res += t
-            # 仅在有 UI 组件时流式更新
-            if seg.get('ui_component'): seg['ui_component'].value = res
-    except Exception as e: print(f"Writer Error: {e}")
-    
-    seg['revised'] = res
-    
-    # 4. Reviewer 闭环
-    if app_state.settings.is_reviewer_enabled():
-        rev_sys = assemble_prompt('reviewer')
-        rev_conf = app_state.settings.get_role_config('reviewer').copy(); rev_conf['system_prompt'] = rev_sys
-        
-        # Reviewer 用上帝视角
-        graph_god = ""
-        if mgr.current_graph_engine:
-            graph_god = mgr.current_graph_engine.query_context(keywords, chap_idx, mode='author')
-            
-        rev_prompt = f"【上帝资料】{graph_god}\n【原文】{target}\n【改写】{res}\n【指令】{instr}\n请评分(JSON)"
-        
-        try:
-            rev_res = ""
-            async for t in mgr.llm.stream_rewrite("", rev_prompt, rev_conf): rev_res += t
-            r_data = clean_json_response(rev_res)
-            
-            if r_data and r_data.get('score', 0) < app_state.settings.get_review_threshold():
-                # 模式分流
-                if dialog_callback:
-                    # UI 模式：弹窗
-                    action = await dialog_callback(seg, r_data, res)
-                    if action['action'] == 'retry': 
-                        # 重试逻辑：递归调用自己，或在这里简单重跑
-                        # 为了防止无限递归，这里只简单做一次自动修正重试
-                        pass 
-                else:
-                    # 【核心修复】Batch 模式：自动重试
-                    print(f"[Batch] Reviewer 驳回，自动修正: {r_data.get('suggestion')}")
-                    retry_prompt = f"{prompt}\n【总监修改意见 (必须执行)】: {r_data.get('suggestion')}"
-                    retry_res = ""
-                    async for t in mgr.llm.stream_rewrite(target, retry_prompt, conf): retry_res += t
-                    seg['revised'] = retry_res # 更新为修正版
-                    
-        except Exception as e: print(f"Reviewer Error: {e}")
-    
-    return seg['revised']
+    def show(text):
+        if seg.get('ui_component'): seg['ui_component'].value = text
+
+    on_reject = None
+    if dialog_callback:
+        async def on_reject(review, text):
+            action = await dialog_callback(seg, {'score': review.score, 'suggestion': review.suggestion}, text)
+            if action['action'] != 'retry': return None
+            return action.get('feedback') or review.suggestion
+
+    result = await mgr.refine.refine(await refine_request(target, instr), on_text=show, on_reject=on_reject)
+    seg['revised'] = result.text
+    if result.review and result.review.error:
+        ui.notify(f'审校未完成：{result.review.error}', type='warning')
+    return result
 
 async def run_seg_logic(idx, instr, dialog_cb):
     seg = app_state.segments[idx]
@@ -441,8 +372,13 @@ async def start_batch_execution(conf, dlg, all_chs):
             if app_state.stop_signal: break
             if not seg['original'].strip(): continue
             
-            # 【核心修复】调用原子逻辑，不传 dialog_callback，触发自动模式
-            await _atomic_rewrite_segment(seg, global_instr, dialog_callback=None)
+            # 不传 dialog_callback：审校不通过时自动重试
+            try:
+                await _atomic_rewrite_segment(seg, global_instr, dialog_callback=None)
+            except LLMError as e:
+                ui.notify(f'批量任务已停止：{e}', type='negative')
+                app_state.stop_signal = True
+                break
             
             # 稍微暂停，避免 API 速率限制
             await asyncio.sleep(0.2)

@@ -2,13 +2,15 @@
 
 用例按顺序共享同一个应用和页面（模块级夹具），后一步依赖前一步的状态。
 """
+import json
 import sqlite3
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
 
-from fake_llm import REWRITE_MARK
+from fake_llm import REJECT_ONCE, REWRITE_MARK
 
 pytestmark = pytest.mark.e2e
 
@@ -68,6 +70,24 @@ def test_rewrite_segment(page):
     )
     revised = page.locator(".segment-card textarea").nth(1).input_value()
     assert revised.startswith(REWRITE_MARK)
+
+
+def test_reviewer_rejection_retries_with_user_feedback(page, fake_llm):
+    page.get_by_placeholder("在此输入全局精修指令...").fill(f"润色{REJECT_ONCE}")
+    page.locator(".segment-card button:has(i:text-is('auto_fix_high'))").nth(1).click()
+
+    dialog = page.locator(".q-dialog").filter(has_text="总监意见：质量未达标")
+    dialog.wait_for()
+    assert dialog.locator("textarea").last.input_value() == "形容词太多"  # 预填审校建议
+    dialog.locator("textarea").last.fill("加一点幽默感")
+    dialog.get_by_role("button", name="AI 重写").click()
+
+    page.wait_for_function(
+        f"() => document.querySelectorAll('.segment-card textarea')[3].value.startsWith('{REWRITE_MARK}')"
+    )
+    calls = json.load(urllib.request.urlopen(f"{fake_llm}/calls"))
+    assert any("【审校意见（必须执行）】\n加一点幽默感" in c["last"] for c in calls)
+    page.get_by_placeholder("在此输入全局精修指令...").fill("")
 
 
 def test_save_persists_to_sqlite(page, app):

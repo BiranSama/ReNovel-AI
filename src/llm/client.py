@@ -37,6 +37,11 @@ def _is_local(url: str) -> bool:
     return urlparse(url).hostname in LOCAL_HOSTS
 
 
+def needs_api_key(config: dict) -> bool:
+    """没填 API Key，且不是不需要 Key 的本地服务。"""
+    return not (config.get("api_key") or "").strip() and not _is_local(resolve_base_url(config))
+
+
 def _sampling_params(config: dict) -> dict:
     params = {"temperature": float(config.get("temperature", 0.7))}
     if config.get("top_p") is not None:
@@ -81,11 +86,9 @@ class LLMClient:
 
     def _client(self, config: dict) -> tuple[openai.AsyncOpenAI, str]:
         base_url = resolve_base_url(config)
-        api_key = (config.get("api_key") or "").strip()
-        if not api_key:
-            if not _is_local(base_url):
-                raise LLMError("API Key 未设置，请在设置里填写")
-            api_key = "local"  # Ollama / LM Studio 等本地服务不校验 Key
+        if needs_api_key(config):
+            raise LLMError("API Key 未设置，请在设置里填写")
+        api_key = (config.get("api_key") or "").strip() or "local"  # 本地服务不校验 Key
         proxy = (config.get("proxy") or "").strip() or None
 
         key = (base_url, api_key, proxy)
