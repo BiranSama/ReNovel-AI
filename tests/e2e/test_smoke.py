@@ -9,8 +9,9 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
 
-from fake_llm import REJECT_ONCE, REWRITE_MARK
+from fake_llm import REJECT_ONCE, REWRITE_MARK, SLOW
 
 pytestmark = pytest.mark.e2e
 
@@ -28,6 +29,11 @@ def chapter_content(app, project_title: str, chapter_prefix: str) -> str:
         (project_title, f"{chapter_prefix}%"),
     ).fetchone()
     return row[0] if row else ""
+
+
+def wait_for_rewrites_to_finish(page):
+    """改写进行中时精修按钮显示加载动画；等它消失才算整段（含审校与重试）完成。"""
+    page.wait_for_function("() => !document.querySelector('.segment-card .q-btn .q-spinner')")
 
 
 def wait_until(predicate, timeout: float = 60, interval: float = 0.5):
@@ -68,6 +74,7 @@ def test_rewrite_segment(page):
         f"() => [...document.querySelectorAll('.segment-card textarea')]"
         f".some(t => t.value.includes('{REWRITE_MARK}'))"
     )
+    wait_for_rewrites_to_finish(page)
     revised = page.locator(".segment-card textarea").nth(1).input_value()
     assert revised.startswith(REWRITE_MARK)
 
@@ -85,6 +92,7 @@ def test_reviewer_rejection_retries_with_user_feedback(page, fake_llm):
     page.wait_for_function(
         f"() => document.querySelectorAll('.segment-card textarea')[3].value.startsWith('{REWRITE_MARK}')"
     )
+    wait_for_rewrites_to_finish(page)
     calls = json.load(urllib.request.urlopen(f"{fake_llm}/calls"))
     assert any("【审校意见（必须执行）】\n加一点幽默感" in c["last"] for c in calls)
     page.get_by_placeholder("在此输入全局精修指令...").fill("")
@@ -121,10 +129,26 @@ def test_batch_creates_backup_project(page, app):
     assert wait_until(batch_done), app.log_tail()
 
 
-@pytest.mark.xfail(strict=True, reason="已知 bug：批量把改写写回了原项目，副本保持原样")
 def test_batch_rewrites_the_backup_not_the_original(app):
-    backup = chapter_content(app, "novel.txt (批量副本)", "第一章")
-    assert backup.count(REWRITE_MARK) == 6
+    assert chapter_content(app, "novel.txt (批量副本)", "第一章").count(REWRITE_MARK) == 6
+    assert chapter_content(app, "novel.txt", "第一章").count(REWRITE_MARK) == 2  # 只有之前手动保存的两段
+
+
+def test_batch_can_be_stopped(page, app):
+    page.locator(".chapter-item", has_text="第一章").click()
+    page.wait_for_function("() => document.querySelectorAll('.segment-card').length === 6")
+    before = chapter_content(app, "novel.txt (批量副本)", "第一章")
+
+    page.get_by_placeholder("在此输入全局精修指令...").fill(f"润色{SLOW}")
+    page.get_by_role("button", name="批量").click()
+    page.get_by_role("checkbox", name="创建副本（在副本上改写，原项目不动）").click()
+    page.get_by_role("button", name="启动").click()
+
+    page.get_by_role("button", name="停止").click()
+    page.get_by_text("批量任务已停止").wait_for()
+    expect(page.get_by_role("button", name="停止")).to_be_hidden()
+    assert chapter_content(app, "novel.txt (批量副本)", "第一章") == before  # 未完成的章不保存
+    page.get_by_placeholder("在此输入全局精修指令...").fill("")
 
 
 def test_chat_answers(page):

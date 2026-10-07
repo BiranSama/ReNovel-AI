@@ -6,6 +6,7 @@ from src.core.settings import AppSettings
 from src.ai.rag_engine import RAGEngine
 from src.services.context import ContextBuilder
 from src.services.refine import RefinePipeline
+from src.services.batch import BatchService
 # 容错导入 GraphEngine
 try:
     from src.core.graph_engine import GraphEngine
@@ -32,6 +33,7 @@ class GlobalManagers:
         self.refine = RefinePipeline(
             self.llm, self.settings, ContextBuilder(self.rag, lambda: self.current_graph_engine)
         )
+        self.batch = BatchService(self.pm, self.refine, self.rag)
 
     async def init_db(self):
         """在 app.on_startup 时调用"""

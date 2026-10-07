@@ -3,6 +3,7 @@
 按请求内容返回可预测的结果，让冒烟测试不依赖真实 API Key 和网络。
 用法: python fake_llm.py <port>
 """
+import asyncio
 import json
 import sys
 import time
@@ -16,6 +17,7 @@ CALLS: list[dict] = []
 
 REWRITE_MARK = "【FAKE改写】"
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
+SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
 _rejected: set[str] = set()
 
 
@@ -52,6 +54,8 @@ async def chat(req: Request):
     body = await req.json()
     messages = body["messages"]
     CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"]})
+    if SLOW in messages[-1]["content"]:
+        await asyncio.sleep(1)
     text = reply_for(messages)
     created = int(time.time())
 

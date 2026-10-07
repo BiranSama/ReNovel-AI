@@ -129,15 +129,21 @@ def create_layout():
         if mgr.current_graph_engine:
             asyncio.create_task(mgr.current_graph_engine.extract_from_text_stream(result.text, 999))
 
-    async def run_seg_rewrite_ui(idx):
+    async def run_seg_rewrite_ui(idx, button=None):
         seg = app_state.segments[idx]
+        if seg.get('busy'): return  # 这一段正在改写，忽略重复点击
         # 段落自己的局部指令优先；为空时用底部的全局指令
         local = (getattr(seg.get('prompt_input'), 'value', '') or '').strip()
         instr = local or prompt_input.value or "润色"
+        seg['busy'] = True
+        if button: button.props('loading')
         try:
             await h._atomic_rewrite_segment(seg, instr, lambda s, r, t: show_warning_dialog(s, r, t))
         except LLMError as e:
             ui.notify(f'改写失败：{e}', type='negative')
+        finally:
+            seg['busy'] = False
+            if button: button.props(remove='loading')
         if seg.get('ui_component'): seg['ui_component'].value = seg.get('revised', '')
 
     # ==========================
@@ -198,7 +204,7 @@ def create_layout():
 
                             # 操作区
                             with ui.column().classes('w-[10%] pt-6 gap-2 items-center'):
-                                ui.button(icon='auto_fix_high', on_click=lambda i=i: run_seg_rewrite_ui(i)).props('round flat dense color=indigo').tooltip('精修')
+                                ui.button(icon='auto_fix_high', on_click=lambda e, i=i: run_seg_rewrite_ui(i, e.sender)).props('round flat dense color=indigo').tooltip('精修')
                                 ui.button(icon='delete', on_click=lambda i=i: (app_state.segments.pop(i), editor_panel.refresh())).props('round flat dense color=red size=sm')
                                 with ui.expansion('', icon='edit_note').props('dense flat'):
                                     seg['prompt_input'] = ui.input(placeholder='局部指令').props('dense outlined').classes('w-32 text-xs')
@@ -259,8 +265,12 @@ def create_layout():
             with ui.row().bind_visibility_from(app_state, 'view_mode', value='full'):
                 ui.button('AI 全文重写', on_click=run_full_rewrite).props('unelevated color=purple-6 text-white icon=auto_fix_normal size=md')
 
-            ui.button('批量', on_click=h.open_batch_console).props('flat dense color=indigo')
-            ui.button('停止', on_click=h.stop_workflow).props('outline color=red dense').classes('hidden')
+            ui.button('批量', on_click=lambda: h.open_batch_console(prompt_input.value)).props('flat dense color=indigo')
+            ui.button('停止', on_click=h.stop_workflow).props('outline color=red dense') \
+                .bind_visibility_from(app_state, 'is_batch_running')
+            with ui.column().classes('gap-0 w-56'):
+                app_state.ui['status_label'] = ui.label('').classes('text-xs text-gray-500 truncate w-full')
+                app_state.ui['status_progress'] = ui.linear_progress(value=0, show_value=False).classes('hidden w-full')
 
     # 强制首次渲染与数据加载
     ui.timer(0.1, lambda: (ensure_segments_safe(), editor_panel.refresh()), once=True)

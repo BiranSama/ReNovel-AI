@@ -5,6 +5,7 @@ from src.llm import LLMError
 from src.llm.prompts import assemble_system_prompt
 from src.services.refine import RefineRequest
 from src.services.importer import UnsupportedEncoding, decode_text
+from src.services.batch import BACKUP_SUFFIX, DEFAULT_INSTRUCTION
 import asyncio
 import functools
 
@@ -319,79 +320,77 @@ async def run_seg_logic(idx, instr, dialog_cb):
 # ==========================
 # Batch Task
 # ==========================
-async def open_batch_console():
+async def open_batch_console(instruction=""):
     if not app_state.current_project_id: return ui.notify('请先导入', type='warning')
+    if app_state.is_batch_running: return ui.notify('已有批量任务在运行', type='warning')
     all_chs = await mgr.pm.get_chapters(app_state.current_project_id)
-    task_conf = {'scope': 'current', 'create_backup': True, 'selected': set()}
-    
+    remaining = await mgr.batch.remaining_chapters(app_state.current_project_id)
+    task_conf = {'scope': 'current', 'create_backup': True, 'selected': [], 'instruction': instruction}
+
     def render_ch_list(container):
         container.clear()
         with container:
             scope = task_conf['scope']; targets = []
-            if scope == 'current' and app_state.current_chapter_id: 
+            if scope == 'current' and app_state.current_chapter_id:
                 targets = [c for c in all_chs if c['id'] == app_state.current_chapter_id]
             elif scope == 'all': targets = all_chs
-            task_conf['selected'] = set(c['id'] for c in targets)
+            elif scope == 'resume': targets = remaining
+            task_conf['selected'] = [c['id'] for c in targets]
             for c in targets: ui.label(c['title']).classes('text-sm border-b')
 
     with ui.dialog() as d, ui.card().classes('w-full max-w-3xl'):
         ui.label('批量任务').classes('text-lg font-bold')
         with ui.row().classes('w-full gap-4'):
             with ui.column().classes('w-1/3'):
-                ui.radio({'current':'本章','all':'全书'}, value='current', on_change=lambda: render_ch_list(ch_area)).bind_value(task_conf, 'scope')
-                ui.checkbox('创建副本', value=True).bind_value(task_conf, 'create_backup')
+                ui.radio({'current': '本章', 'all': '全书', 'resume': f'继续上次进度（剩 {len(remaining)} 章）'},
+                         value='current', on_change=lambda: render_ch_list(ch_area)).bind_value(task_conf, 'scope')
+                ui.checkbox('创建副本（在副本上改写，原项目不动）', value=True).bind_value(task_conf, 'create_backup') \
+                    .bind_visibility_from(task_conf, 'scope', backward=lambda s: s != 'resume')
             with ui.column().classes('w-2/3'):
                 ch_area = ui.scroll_area().classes('h-48 border rounded p-2 w-full')
                 render_ch_list(ch_area)
         with ui.row().classes('w-full justify-end'):
-            ui.button('启动', on_click=lambda: start_batch_execution(task_conf, d, all_chs)).props('color=indigo')
+            ui.button('启动', on_click=lambda: start_batch_execution(task_conf, d)).props('color=indigo')
     d.open()
 
-async def start_batch_execution(conf, dlg, all_chs):
-    ids = conf['selected']
+async def start_batch_execution(conf, dlg):
+    ids = list(conf['selected'])
     if not ids: return ui.notify('无章节')
     dlg.close()
-    
+
     pid = app_state.current_project_id
-    if conf['create_backup']:
+    if conf['create_backup'] and conf['scope'] != 'resume':
         ui.notify('备份中...')
-        pid = await mgr.pm.duplicate_project(pid, "(批量副本)")
-        if mgr.rag: mgr.rag.clone_project_memory(app_state.current_project_id, pid)
-        await switch_project(pid, app_state.current_project_title+"(批量副本)")
-    
+        pid, mapping = await mgr.batch.make_backup(pid)
+        ids = [mapping[i] for i in ids]
+        await switch_project(pid, f"{app_state.current_project_title} {BACKUP_SUFFIX}")
+        await refresh_project_list()
+
+    def progress(p):
+        if p.chapters_done < p.chapters_total:
+            update_status(f'批量：{p.chapter_title}（第 {p.chapters_done + 1}/{p.chapters_total} 章，'
+                          f'第 {p.paragraphs_done + 1}/{p.paragraphs_total} 段）', p.fraction)
+
     app_state.is_batch_running = True; app_state.stop_signal = False
-    update_status("批量任务启动...", 0.1)
-    
-    targets = [c for c in all_chs if c['id'] in ids]
-    global_instr = "精修文本，保持原意，提升文笔。"
-    
-    for i, ch in enumerate(targets):
-        if app_state.stop_signal: break
-        update_status(f'处理: {ch["title"]} ({i+1}/{len(targets)})', (i+1)/len(targets))
-        
-        await load_chapter(ch['id'])
-        
-        # 核心循环
-        for seg in app_state.segments:
-            if app_state.stop_signal: break
-            if not seg['original'].strip(): continue
-            
-            # 不传 dialog_callback：审校不通过时自动重试
-            try:
-                await _atomic_rewrite_segment(seg, global_instr, dialog_callback=None)
-            except LLMError as e:
-                ui.notify(f'批量任务已停止：{e}', type='negative')
-                app_state.stop_signal = True
-                break
-            
-            # 稍微暂停，避免 API 速率限制
-            await asyncio.sleep(0.2)
-        
-        await save_all()
-        await mgr.pm.save_progress(pid, ch['id'])
-        
-    app_state.is_batch_running = False
-    update_status("批量任务完成", 1.0)
+    update_status("批量任务启动...", 0.0)
+    try:
+        outcome = await mgr.batch.run(pid, ids, conf.get('instruction') or DEFAULT_INSTRUCTION,
+                                      on_progress=progress, should_stop=lambda: app_state.stop_signal)
+    finally:
+        app_state.is_batch_running = False
+
+    summary = f'完成 {outcome.chapters_done}/{outcome.chapters_total} 章'
+    if outcome.error:
+        ui.notify(f'批量任务出错已停止（{summary}）：{outcome.error}', type='negative')
+    elif outcome.stopped:
+        ui.notify(f'批量任务已停止（{summary}）。当前章未完成的部分未保存，可用“继续上次进度”接着跑', type='warning')
+    else:
+        ui.notify(f'批量任务完成（{summary}）', type='positive')
+    if outcome.review_errors:
+        ui.notify(f'{outcome.review_errors} 段审校未完成，已保留改写结果', type='warning')
+    update_status(f'批量：{summary}', 1.0)
+    if app_state.current_chapter_id and app_state.current_project_id == pid:
+        await load_chapter(app_state.current_chapter_id)  # 刷新编辑器里的当前章
 
 # ==========================
 # Chat Logic
