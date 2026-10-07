@@ -172,3 +172,14 @@ def test_store_round_trip(env):
     asyncio.run(store.save("p9", ChapterMemory("c9", "摘要", ["甲"], ["事件"], "f")))
     assert asyncio.run(store.for_project("p9")) == {"c9": ChapterMemory("c9", "摘要", ["甲"], ["事件"], "f")}
     assert not asyncio.run(store.has_any("nobody"))
+
+
+def test_concurrent_updates_do_not_summarize_twice(env):
+    llm = FakeLLM()
+    memory_service = service(env, llm)
+
+    async def both():
+        await asyncio.gather(memory_service.update(env[2]), memory_service.update(env[2]))
+
+    asyncio.run(both())
+    assert len(llm.prompts) == 2  # 两章正文各一次

@@ -5,6 +5,7 @@
 - 很短的章节（如只有一句话的序章、被清空的章节）不调用模型，记为空记忆
 - 某章的返回内容无效时不记录，下次更新重试
 """
+import asyncio
 from typing import Callable, Optional
 
 from src.core.chapter_memory_store import CharacterNote, ChapterMemory, ChapterMemoryStore
@@ -52,6 +53,7 @@ class ChapterMemoryService:
         self.settings = settings
         self.projects = projects  # ProjectManager
         self.store = store
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def summarize(self, chapter: dict, text: str, known_characters: list[str]) -> ChapterMemory:
         """整理一章的记忆。模型调用失败抛 LLMError，返回内容无效抛 MemoryParseError。"""
@@ -72,7 +74,14 @@ class ChapterMemoryService:
         on_progress: Optional[Callable[[str, float], None]] = None,
         chapter_ids: Optional[set] = None,
     ) -> int:
-        """整理内容有变化的章节（可限定 chapter_ids），返回整理了几章。模型调用失败时抛 LLMError，已完成的章节已保存。"""
+        """整理内容有变化的章节（可限定 chapter_ids），返回整理了几章。模型调用失败时抛 LLMError，已完成的章节已保存。
+
+        同一项目的整理按项目加锁依次进行（多个标签页同时保存时），后一个只处理仍有变化的章节。
+        """
+        async with self._locks.setdefault(project_id, asyncio.Lock()):
+            return await self._update(project_id, on_progress, chapter_ids)
+
+    async def _update(self, project_id, on_progress, chapter_ids) -> int:
         chapters = await self.projects.get_chapters(project_id)
         memories = await self.store.for_project(project_id)
         updated = 0

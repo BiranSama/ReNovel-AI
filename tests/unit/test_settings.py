@@ -92,3 +92,18 @@ def test_embedding_defaults_to_local_model_and_keeps_user_choice():
         ("local", "Xenova/bge-small-zh-v1.5", "https://hf-mirror.com")
     custom = AppSettings(MemoryConfig({"embedding": {"provider": "api", "model": "bge-m3"}})).config["embedding"]
     assert (custom["provider"], custom["model"], custom["mirror"]) == ("api", "bge-m3", "https://hf-mirror.com")
+
+
+def test_saving_only_writes_fields_changed_in_this_dialog():
+    """两个标签页同时打开设置：各自保存时只写入自己改过的项，不会用旧值覆盖对方的修改。"""
+    settings = AppSettings(MemoryConfig())
+    tab_a, base_a = settings.draft(), settings.draft()
+    tab_b, base_b = settings.draft(), settings.draft()
+
+    tab_a["writer"]["model"] = "deepseek-chat"
+    settings.apply(tab_a, base_a)
+    tab_b["review_mode"] = "auto"
+    settings.apply(tab_b, base_b)
+
+    assert settings.config["writer"]["model"] == "deepseek-chat"
+    assert settings.config["review_mode"] == "auto"

@@ -13,6 +13,7 @@ from src.services.refine import RefineRequest
 
 DEFAULT_INSTRUCTION = "精修文本，保持原意，提升文笔。"
 BACKUP_SUFFIX = "(批量副本)"
+BUSY_ERROR = "这个项目已有批量任务在运行（可能在另一个标签页）"
 
 
 def split_paragraphs(text: str) -> list[str]:
@@ -56,6 +57,10 @@ class BatchService:
         self.refine = refine                # RefinePipeline
         self.memory = memory                # RAGEngine，可选
         self.chapter_store = chapter_store  # ChapterMemoryStore，可选
+        self._running: set[str] = set()     # 正在批量改写的项目（所有标签页共享）
+
+    def is_running(self, project_id: str) -> bool:
+        return project_id in self._running
 
     async def make_backup(self, project_id: str, suffix: str = BACKUP_SUFFIX) -> tuple[str, dict[str, str]]:
         """复制项目（含向量记忆、章节记忆与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
@@ -84,6 +89,16 @@ class BatchService:
         on_progress: Optional[Callable[[BatchProgress], None]] = None,
         should_stop: Callable[[], bool] = lambda: False,
     ) -> BatchOutcome:
+        """同一项目同时只能有一个批量任务：另一个标签页已在改写这个项目时直接返回错误，避免互相覆盖。"""
+        if project_id in self._running:
+            return BatchOutcome(project_id, 0, len(chapter_ids), stopped=True, error=BUSY_ERROR)
+        self._running.add(project_id)
+        try:
+            return await self._run(project_id, chapter_ids, instruction, on_progress, should_stop)
+        finally:
+            self._running.discard(project_id)
+
+    async def _run(self, project_id, chapter_ids, instruction, on_progress, should_stop) -> BatchOutcome:
         chapters = await self.projects.get_chapters(project_id)
         position = {c["id"]: i + 1 for i, c in enumerate(chapters)}
         wanted = set(chapter_ids)
