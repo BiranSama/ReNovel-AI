@@ -383,7 +383,7 @@ class Session:
             ui.notify(f'审校未完成：{review.error}', type='warning')
         elif not review.passed and review not in asked:
             ui.notify(f'重试 {self.services.settings.get_max_review_retries()} 次后仍未通过审校（{review.score:g} 分），'
-                      f'已保留最后一次改写：{review.suggestion}', type='warning', multi_line=True)
+                      f'已保留最后一次改写：{review.feedback}', type='warning', multi_line=True)
 
     # ==========================
     # Batch Task
