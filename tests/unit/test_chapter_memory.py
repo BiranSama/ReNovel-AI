@@ -184,3 +184,11 @@ def test_concurrent_updates_do_not_summarize_twice(env):
 
     asyncio.run(both())
     assert len(llm.prompts) == 2  # 两章正文各一次
+
+
+def test_hooks_are_parsed_and_stored(env):
+    memory = parse_memory("c1", '{"summary": "摘要", "hooks": ["李四欲言又止", " "], "characters": []}')
+    assert memory.hooks == ["李四欲言又止"]
+    _, store, pid = env
+    asyncio.run(store.save(pid, memory))
+    assert asyncio.run(store.for_project(pid))["c1"].hooks == ["李四欲言又止"]

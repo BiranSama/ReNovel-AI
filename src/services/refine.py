@@ -89,6 +89,53 @@ def style_text(style) -> str:
     return style.description + (f"\n示例：\n{samples}" if samples else "")
 
 
+def parse_review(raw: str, threshold: float, with_style: bool = False) -> Review:
+    data = parse_json_object(raw) or {}
+    suggestion = str(data.get("suggestion", ""))
+    conflicts = data.get("conflicts") if isinstance(data.get("conflicts"), list) else []
+    conflicts = [str(c).strip() for c in conflicts if str(c).strip()]
+    style_score = _number(data.get("style_score")) if with_style else None
+    score = _number(data.get("score"))
+    if score is None:  # 无法解析：不拦截
+        return Review(score=None, suggestion=suggestion, passed=True, raw=raw, conflicts=conflicts,
+                      style_score=style_score)
+    return Review(score=score, suggestion=suggestion, passed=score >= threshold, raw=raw, conflicts=conflicts,
+                  style_score=style_score)
+
+
+async def write_with_review(settings, write, review, on_reject=None) -> "RefineResult":
+    """写作 → 审校 → 未通过时重试，改写与续写共用。
+
+    write(feedback) 返回正文，feedback 为空表示第一次；review(text) 返回 Review。
+    on_reject 不为空且审校模式为 manual 时由用户决定重试还是接受，否则按审校意见自动重试。
+    """
+    reviewing = settings.is_reviewer_enabled()
+    ask_user = on_reject is not None and settings.get_review_mode() == "manual"
+    max_attempts = 1 + settings.get_max_review_retries() if reviewing else 1
+    feedback = ""
+    attempts = 0
+    while True:
+        attempts += 1
+        text = await write(feedback)
+        if not reviewing:
+            return RefineResult(text, None, attempts)
+
+        result = await review(text)
+        if result.passed:
+            return RefineResult(text, result, attempts)
+
+        can_retry = attempts < max_attempts
+        if ask_user:  # 最后一次仍未通过也要让用户看到审校意见，再决定是否接受
+            decision = await on_reject(result, text, can_retry)
+            if decision is None or not can_retry:
+                return RefineResult(text, result, attempts)
+            feedback = decision
+        elif not can_retry:
+            return RefineResult(text, result, attempts)
+        else:
+            feedback = result.feedback
+
+
 # 审校未通过时询问用户：返回修改意见则据此重写，返回 None 表示接受当前结果。
 # 第三个参数 can_retry 为 False 表示已达最多重试次数，这次询问只能接受当前结果
 OnReject = Callable[[Review, str, bool], Awaitable[Optional[str]]]
@@ -102,7 +149,7 @@ class RefinePipeline:
         self.context = context
         self.styles = styles  # StyleStore，可选；每次改写都重新读取，编辑档案后立即生效
 
-    async def _style(self, project_id):
+    async def style_for(self, project_id):
         profile = await self.styles.get(project_id) if self.styles else None
         return profile if profile and not profile.is_empty else None
 
@@ -113,39 +160,19 @@ class RefinePipeline:
         on_reject: Optional[OnReject] = None,
     ) -> RefineResult:
         """改写并按审校策略重试。Writer 调用失败时抛出 LLMError。"""
-        reviewing = self.settings.is_reviewer_enabled()
-        ask_user = on_reject is not None and self.settings.get_review_mode() == "manual"
-        max_attempts = 1 + self.settings.get_max_review_retries() if reviewing else 1
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "reader")
-        style = await self._style(request.project_id)
-
-        feedback = ""
-        attempts = 0
-        while True:
-            attempts += 1
-            text = await self._write(request, references, feedback, on_text, style)
-            if not reviewing:
-                return RefineResult(text, None, attempts)
-
-            review = await self.review(request, text)
-            if review.passed:
-                return RefineResult(text, review, attempts)
-
-            can_retry = attempts < max_attempts
-            if ask_user:  # 最后一次仍未通过也要让用户看到审校意见，再决定是否接受
-                decision = await on_reject(review, text, can_retry)
-                if decision is None or not can_retry:
-                    return RefineResult(text, review, attempts)
-                feedback = decision
-            elif not can_retry:
-                return RefineResult(text, review, attempts)
-            else:
-                feedback = review.feedback
+        style = await self.style_for(request.project_id)
+        return await write_with_review(
+            self.settings,
+            lambda feedback: self._write(request, references, feedback, on_text, style),
+            lambda text: self.review(request, text),
+            on_reject,
+        )
 
     async def review(self, request: RefineRequest, candidate: str) -> Review:
         """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
-        style = await self._style(request.project_id)
+        style = await self.style_for(request.project_id)
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("文风档案", style_text(style)),
@@ -155,23 +182,15 @@ class RefinePipeline:
             REVIEW_INSTRUCTION,
             STYLE_REVIEW_INSTRUCTION if style else "",
         )
+        return await self.ask_reviewer(prompt, with_style=bool(style))
+
+    async def ask_reviewer(self, prompt: str, with_style: bool = False) -> Review:
+        """调用 Reviewer 并解析评分。调用失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
         try:
             raw = await self.llm.complete(self._role("reviewer"), self._messages("reviewer", prompt))
         except LLMError as error:
             return Review(score=None, suggestion="", passed=True, error=str(error))
-
-        data = parse_json_object(raw) or {}
-        suggestion = str(data.get("suggestion", ""))
-        conflicts = data.get("conflicts") if isinstance(data.get("conflicts"), list) else []
-        conflicts = [str(c).strip() for c in conflicts if str(c).strip()]
-        style_score = _number(data.get("style_score")) if style else None
-        score = _number(data.get("score"))
-        if score is None:
-            return Review(score=None, suggestion=suggestion, passed=True, raw=raw, conflicts=conflicts,
-                          style_score=style_score)
-        passed = score >= self.settings.get_review_threshold()
-        return Review(score=score, suggestion=suggestion, passed=passed, raw=raw, conflicts=conflicts,
-                      style_score=style_score)
+        return parse_review(raw, self.settings.get_review_threshold(), with_style)
 
     async def analyze(self, request: RefineRequest) -> str:
         """军师分析：评估改写指令的可行性与风险，输出简报。"""
@@ -196,7 +215,11 @@ class RefinePipeline:
             section("原文", request.text),
             "请直接输出改写后的正文。",
         )
-        messages = self._messages("writer", prompt, persona=request.persona)
+        return await self.stream_writer(prompt, request.persona, on_text)
+
+    async def stream_writer(self, prompt: str, persona: str = "", on_text: Optional[OnText] = None) -> str:
+        """调用 Writer 流式生成，on_text 收到累计的文字。失败时抛出 LLMError。"""
+        messages = self._messages("writer", prompt, persona=persona)
         if on_text:
             on_text("")
         text = ""

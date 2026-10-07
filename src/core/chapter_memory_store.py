@@ -1,4 +1,4 @@
-"""章节记忆的存储：每章一条（摘要、出场角色、关键事件、生成时的正文指纹），与项目数据在同一个数据库。"""
+"""章节记忆的存储：每章一条（摘要、出场角色、关键事件、伏笔、生成时的正文指纹），与项目数据在同一个数据库。"""
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -26,6 +26,7 @@ class ChapterMemory:
     events: list[str] = field(default_factory=list)
     fingerprint: str = ""  # 生成记忆时正文的指纹；正文变了才需要重新整理
     notes: list[CharacterNote] = field(default_factory=list)
+    hooks: list[str] = field(default_factory=list)  # 本章埋下、尚未揭晓的悬念或伏笔
 
     @property
     def is_empty(self) -> bool:
@@ -51,8 +52,9 @@ class ChapterMemoryStore:
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_chapter_memories_project ON chapter_memories (project_id)")
             columns = {row[1] for row in await (await db.execute("PRAGMA table_info(chapter_memories)")).fetchall()}
-            if "notes" not in columns:
-                await db.execute("ALTER TABLE chapter_memories ADD COLUMN notes TEXT")
+            for column in ("notes", "hooks"):
+                if column not in columns:
+                    await db.execute(f"ALTER TABLE chapter_memories ADD COLUMN {column} TEXT")
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS character_overrides (
                     project_id TEXT NOT NULL,
@@ -71,23 +73,24 @@ class ChapterMemoryStore:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT OR REPLACE INTO chapter_memories "
-                "(chapter_id, project_id, fingerprint, summary, characters, events, updated_at, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(chapter_id, project_id, fingerprint, summary, characters, events, updated_at, notes, hooks) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (memory.chapter_id, project_id, memory.fingerprint, memory.summary,
                  json.dumps(memory.characters, ensure_ascii=False), json.dumps(memory.events, ensure_ascii=False),
                  datetime.now().isoformat(timespec="seconds"),
-                 json.dumps([asdict(n) for n in memory.notes], ensure_ascii=False)))
+                 json.dumps([asdict(n) for n in memory.notes], ensure_ascii=False),
+                 json.dumps(memory.hooks, ensure_ascii=False)))
             await db.commit()
 
     async def for_project(self, project_id: str) -> dict[str, ChapterMemory]:
         """本项目各章的记忆，按章节 id 索引。"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT chapter_id, summary, characters, events, fingerprint, notes FROM chapter_memories "
+                "SELECT chapter_id, summary, characters, events, fingerprint, notes, hooks FROM chapter_memories "
                 "WHERE project_id = ?", (project_id,))
             rows = await cursor.fetchall()
         return {r[0]: ChapterMemory(r[0], r[1] or "", json.loads(r[2] or "[]"), json.loads(r[3] or "[]"), r[4] or "",
-                                    [CharacterNote(**n) for n in json.loads(r[5] or "[]")])
+                                    [CharacterNote(**n) for n in json.loads(r[5] or "[]")], json.loads(r[6] or "[]"))
                 for r in rows}
 
     async def has_any(self, project_id: str) -> bool:

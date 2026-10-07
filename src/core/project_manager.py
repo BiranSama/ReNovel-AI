@@ -106,6 +106,18 @@ class ProjectManager:
         projects = await self.get_projects()
         return [p for p in projects if json.loads(p.get('world_settings') or '{}').get('backup_of') == project_id]
 
+    async def add_chapter(self, project_id: str, title: str, content: str) -> str:
+        """在全书末尾新增一章，返回章节 id。"""
+        chapter_id = str(uuid.uuid4())
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM chapters WHERE project_id = ?",
+                                      (project_id,))
+            order_index = (await cursor.fetchone())[0]
+            await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
+                             (chapter_id, project_id, title, order_index, content))
+            await db.commit()
+        return chapter_id
+
     async def get_chapters(self, project_id: str):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

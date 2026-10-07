@@ -10,6 +10,7 @@ from nicegui import ui
 
 from src.llm import LLMError
 from src.services.batch import BACKUP_SUFFIX, DEFAULT_INSTRUCTION
+from src.services.continuation import ContinueRequest
 from src.services.importer import UnsupportedEncoding, decode_text
 from src.services import segments
 from src.services.refine import RefineRequest
@@ -375,6 +376,15 @@ class Session:
 
     async def refine(self, request, on_text, ask=None):
         """走统一精修流程；结束后对审校失败或最终未通过给出提示（用户已在弹窗里看过的除外）。"""
+        return await self._reviewed(
+            lambda on_reject: self.services.refine.refine(request, on_text=on_text, on_reject=on_reject), ask)
+
+    async def continue_text(self, request, on_text, ask=None):
+        """生成续写草稿（不保存），审校策略与改写相同。"""
+        return await self._reviewed(
+            lambda on_reject: self.services.continuation.continue_text(request, on_text, on_reject), ask)
+
+    async def _reviewed(self, run, ask):
         asked = []
         on_reject = None
         if ask:
@@ -382,7 +392,7 @@ class Session:
                 asked.append(review)
                 return await ask(review, text, can_retry)
 
-        result = await self.services.refine.refine(request, on_text=on_text, on_reject=on_reject)
+        result = await run(on_reject)
         self.notify_review(result.review, asked)
         return result
 
@@ -394,6 +404,42 @@ class Session:
         elif not review.passed and review not in asked:
             ui.notify(f'重试 {self.services.settings.get_max_review_retries()} 次后仍未通过审校（{review.score:g} 分），'
                       f'已保留最后一次改写：{review.feedback}', type='warning', multi_line=True)
+
+    # ==========================
+    # 续写
+    # ==========================
+    async def continue_request(self, mode, after=0, outline="", length=800, title=""):
+        """mode 为 chapter：在全书末尾续写新章节；paragraph：在当前章节第 after 段（从 1 开始）之后续写。"""
+        state, pm = self.state, self.services.pm
+        if mode == 'chapter':
+            chapters = await pm.get_chapters(state.current_project_id)
+            last = await pm.get_chapter_content(chapters[-1]['id']) if chapters else ""
+            return ContinueRequest(state.current_project_id, len(chapters) + 1, last or "", outline=outline,
+                                   target_chars=length, title=title, persona=state.active_system_prompt or "")
+        after = max(0, min(int(after or 0), len(state.segments)))
+        return ContinueRequest(state.current_project_id, await self.chapter_index(),
+                               segments.merge(state.segments[:after]), segments.merge(state.segments[after:]),
+                               outline=outline, target_chars=length, persona=state.active_system_prompt or "")
+
+    async def adopt_continuation(self, mode, draft, after=0, title=""):
+        """采纳续写草稿：写入项目并进入记忆（向量记忆、章节记忆；已建图谱的项目也更新图谱）。"""
+        state, pid = self.state, self.state.current_project_id
+        if mode == 'chapter':
+            cid = await self.services.continuation.adopt_chapter(pid, title, draft)
+            await self.load_chapter(cid)
+        else:
+            cid = state.current_chapter_id
+            after = max(0, min(int(after or 0), len(state.segments)))
+            # 插入为“空原文 + 已采纳的候选”：保存时写入，点撤销即可去掉这一段
+            lines = [seg['original'] for seg in split_text(draft)]
+            state.segments[after:after] = [segments.new_segment("", line) for line in lines]
+            self._render()
+            await self.save_all()
+        asyncio.create_task(self.bg_update_memory(pid, {cid}))
+        engine = self.services.graphs.get(pid)
+        if engine and engine.is_built():
+            asyncio.create_task(self.bg_build_graph(pid, {cid}))
+        return cid
 
     # ==========================
     # Batch Task

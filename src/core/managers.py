@@ -15,6 +15,7 @@ from src.services.graph import GraphService
 from src.services.chapter_memory import ChapterMemoryService
 from src.services.characters import CharacterService
 from src.services.style import StyleService
+from src.services.continuation import ContinuationService
 from src.core.style_store import StyleStore
 from src.core.chapter_memory_store import ChapterMemoryStore
 from src.utils.logger import ConsoleLogger as Log
@@ -58,6 +59,7 @@ class Services:
         self.chapter_memory = ChapterMemoryService(self.llm, self.settings, self.pm, self.chapter_store)
         self.characters = CharacterService(self.pm, self.chapter_store, self.graphs.get)
         self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store, self.style_store)
+        self.continuation = ContinuationService(self.refine, self.pm, self.rag, self.chapter_store)
 
     async def init_db(self):
         """在 app.on_startup 时调用"""
