@@ -149,3 +149,21 @@ def test_conflicts_are_fed_back_to_writer(tmp_path, monkeypatch, book):
                                                        project_id=pid, chapter_index=3)))
     assert result.attempts == 2
     assert "冲突：第2章已拜师，此处却说没有师父" in llm.prompts["writer"][1]
+
+
+def test_reader_profiles_ignore_aliases_and_traits_from_later_chapters(tmp_path, monkeypatch, book):
+    pid, pipeline, llm = book
+    store = pipeline.context.chapter_store
+
+    async def reveal_later():
+        chapter4 = (await pipeline.context.projects.get_chapters(pid))[3]
+        memory = (await store.for_project(pid))[chapter4["id"]]
+        memory.notes.append(CharacterNote("张三", ["鬼面人"], "阴狠", ""))
+        await store.save(pid, memory)
+
+    asyncio.run(reveal_later())
+    writer, reviewer = rewrite_chapter_three(book)
+    context = writer.split("【指令】")[0]
+    assert "鬼面人" not in context and "阴狠" not in context  # 第四章才揭示的身份与性格
+    assert "惯用右手" in context  # 用户手动填写的设定保留
+    assert "鬼面人" in reviewer and "阴狠" in reviewer  # 作者视角可以看到

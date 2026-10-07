@@ -28,8 +28,9 @@ class MemoryParseError(ValueError):
 
 def parse_memory(chapter_id: str, raw: str) -> ChapterMemory:
     data = parse_json_object(raw)
-    if data is None or not isinstance(data.get("summary", ""), str):
-        raise MemoryParseError("模型没有返回有效的 JSON")
+    if data is None or not isinstance(data.get("summary"), str) or not data["summary"].strip():
+        # 正文足够长的章节一定能写出摘要；空对象或空摘要当作失败，下次重试，而不是记成“已整理”
+        raise MemoryParseError("模型没有返回有效的章节记忆（缺少摘要）")
 
     def strings(key):
         value = data.get(key) or []

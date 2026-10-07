@@ -27,6 +27,7 @@ class CharacterProfile:
     manual_traits: str = ""                               # 用户填写的性格，优先于自动汇总
     notes: str = ""                                       # 用户备注
     edited: bool = False
+    hidden: bool = False                                  # 用户标记为误识别
 
     @property
     def names(self) -> list[str]:
@@ -66,8 +67,8 @@ class _Groups:
 
 
 def build_profiles(chapters: list[dict], memories: dict[str, ChapterMemory],
-                   overrides: dict[str, CharacterOverride]) -> list[CharacterProfile]:
-    """按出场次数从多到少排列；被用户隐藏的角色不列出。"""
+                   overrides: dict[str, CharacterOverride], include_hidden: bool = False) -> list[CharacterProfile]:
+    """按出场次数从多到少排列；被用户隐藏的角色默认不列出（include_hidden 时列出并标记，可以取消隐藏）。"""
     groups, mentions, first_seen = _Groups(), Counter(), {}
     ordered = [(i, c, memories.get(c["id"])) for i, c in enumerate(chapters, start=1)]
     for _, _, memory in ordered:
@@ -97,7 +98,7 @@ def build_profiles(chapters: list[dict], memories: dict[str, ChapterMemory],
         aliases = [a for a in sorted(members, key=lambda m: first_seen.get(m, 1 << 30)) if a != name]
         aliases += [a for a in override.aliases if a not in aliases and a != name]
         profiles[name] = CharacterProfile(name, aliases, manual_traits=override.traits, notes=override.notes,
-                                          edited=name in overrides)
+                                          edited=name in overrides, hidden=override.hidden)
         for member in members:
             canonical_of[member] = name
 
@@ -115,9 +116,8 @@ def build_profiles(chapters: list[dict], memories: dict[str, ChapterMemory],
             if note.status:
                 profile.statuses.append(StatusChange(index, chapter.get("title", ""), note.status))
 
-    hidden = {name for name, o in overrides.items() if o.hidden}
-    visible = [p for p in profiles.values() if p.name not in hidden]
-    return sorted(visible, key=lambda p: (-len(p.chapters), first_seen.get(p.name, 1 << 30)))
+    listed = [p for p in profiles.values() if include_hidden or not p.hidden]
+    return sorted(listed, key=lambda p: (p.hidden, -len(p.chapters), first_seen.get(p.name, 1 << 30)))
 
 
 def mentioned(profiles: list[CharacterProfile], text: str) -> list[CharacterProfile]:
@@ -132,11 +132,12 @@ class CharacterService:
         self.store = store
         self.graph_provider = graph_provider
 
-    async def profiles(self, project_id: str) -> list[CharacterProfile]:
+    async def profiles(self, project_id: str, include_hidden: bool = False) -> list[CharacterProfile]:
         if not project_id:
             return []
         chapters = await self.projects.get_chapters(project_id)
-        return build_profiles(chapters, await self.store.for_project(project_id), await self.store.overrides(project_id))
+        return build_profiles(chapters, await self.store.for_project(project_id),
+                              await self.store.overrides(project_id), include_hidden)
 
     def relations(self, project_id: str, profile: CharacterProfile, chapter_index: int = 1 << 30,
                   view: str = "author") -> list[str]:

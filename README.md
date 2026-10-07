@@ -94,11 +94,10 @@
 
 ### 环境要求
 * **OS**: Windows / macOS / Linux
-* **Python**: 3.10 或 3.11 (推荐 3.11)
+* **Python**: 3.11 或更高（依赖的 numpy 2.4 / onnxruntime 1.30 需要 3.11+；测试与 CI 使用 3.11）
 
-> [!IMPORTANT]
-> **Windows 用户请注意**：你需要安装 C++ Build Tools 以编译向量库依赖。
-> 下载地址: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+> [!NOTE]
+> 向量库已改为 SQLite + numpy，所有依赖都有预编译的安装包，Windows 上不再需要安装 C++ Build Tools。
 
 ### 安装步骤
 

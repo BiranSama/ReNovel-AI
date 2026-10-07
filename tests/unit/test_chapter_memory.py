@@ -70,8 +70,9 @@ def memories(env):
 def test_parse_memory():
     memory = parse_memory("c1", '好的：{"summary": " 摘要 ", "characters": ["张三", " ", 3], "events": "不是列表"}')
     assert (memory.summary, memory.characters, memory.events) == ("摘要", ["张三", "3"], [])
-    with pytest.raises(MemoryParseError):
-        parse_memory("c1", "我无法完成")
+    for raw in ("我无法完成", "{}", '{"summary": "  ", "characters": ["张三"]}'):
+        with pytest.raises(MemoryParseError):  # 空对象、空摘要都算失败，下次重试
+            parse_memory("c1", raw)
 
 
 def test_update_summarizes_each_saved_chapter_once(env):

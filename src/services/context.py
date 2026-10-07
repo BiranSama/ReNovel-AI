@@ -44,9 +44,14 @@ class ContextBuilder:
 
     async def gather(self, project_id: Optional[str], text: str, chapter_index: int, view: str = "reader") -> str:
         """chapter_index 是当前章节的序号（从 1 开始）；0 表示不在任何章节里，读者视角下没有前文。"""
-        chapters, memories, profiles = await self._load(project_id)
+        chapters, memories, overrides = await self._load(project_id)
         earlier = chapters[:max(chapter_index - 1, 0)] if chapters is not None else None
         reader = view == "reader"
+        if reader:  # 别名、性格、经历都只从前面章节的记忆汇总；用户手动填写的修订保留
+            visible = {c["id"]: memories[c["id"]] for c in earlier or [] if c["id"] in memories}
+            profiles = build_profiles(earlier or [], visible, overrides)
+        else:
+            profiles = build_profiles(chapters or [], memories, overrides)
         involved = mentioned(profiles, text)[:MAX_PROFILES]
         return join_sections(
             section("前情提要", self._recap(earlier, memories)) if reader else "",
@@ -58,13 +63,11 @@ class ContextBuilder:
 
     async def _load(self, project_id):
         if not project_id or not self.projects:
-            return None, {}, []
+            return None, {}, {}
         chapters = await self.projects.get_chapters(project_id)
         if not self.chapter_store:
-            return chapters, {}, []
-        memories = await self.chapter_store.for_project(project_id)
-        overrides = await self.chapter_store.overrides(project_id)
-        return chapters, memories, build_profiles(chapters, memories, overrides)
+            return chapters, {}, {}
+        return chapters, await self.chapter_store.for_project(project_id), await self.chapter_store.overrides(project_id)
 
     async def _memories(self, project_id: Optional[str], text: str, earlier: Optional[list[dict]]) -> str:
         if not project_id or not self.memory or not text.strip():
