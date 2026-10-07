@@ -33,7 +33,7 @@ def create_layout(services):
     state = session.state
     ui.add_head_html(PAGE_CSS)
 
-    settings = SettingsDialog(services.settings)
+    settings = SettingsDialog(services.settings, services.llm)
     settings.create_ui()
 
     # 注册渲染器
