@@ -211,6 +211,19 @@ ReNovel-AI/
 └── main.py                    # 启动入口
 ```
 
+## 🔧 开发 (Development)
+
+```bash
+pip install -r requirements-dev.txt
+python -m playwright install chromium   # 冒烟测试需要的浏览器
+
+pytest                # 全部测试
+pytest tests/unit     # 只跑单元测试（几秒）
+pytest -m e2e         # 只跑冒烟测试：用假 LLM 启动真实应用，浏览器走一遍核心流程
+```
+
+标记为 `xfail` 的用例记录的是已知问题，修复后需要移除对应标记。
+
 ## 🤝 贡献 (Contributing)
 
 欢迎提交 Issue 或 Pull Request！如果你有新的脑洞，请随时告诉我。这是我首次通过git上传仓库

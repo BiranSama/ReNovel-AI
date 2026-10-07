@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# 测试
+pytest==9.1.1
+playwright==1.63.0

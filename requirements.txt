@@ -1,14 +1,11 @@
-nicegui
-aiosqlite
-chromadb
-langchain
-langchain-openai
-langchain-google-genai
-langchain-community
-httpx
-python-dotenv
-Pillow
-colorama
-networkx
-tiktoken
-rapidfuzz
+# 运行依赖（锁定到已验证可用的版本，Python 3.11）
+nicegui==3.17.1
+aiosqlite==0.22.1
+chromadb==1.5.9
+langchain-core==1.6.7
+langchain-openai==1.6.7
+langchain-google-genai==4.4.0
+httpx==0.28.1
+Pillow==12.3.0
+colorama==0.4.6
+networkx==3.6.1
