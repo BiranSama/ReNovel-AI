@@ -43,6 +43,7 @@ class Session:
         self.services = services
         self.state = state or AppState()
         self._renderer = None
+        self.graph_view = None  # 图谱面板，由界面注册
 
     @property
     def graph_engine(self):
@@ -93,7 +94,7 @@ class Session:
                 content = file_obj._data
         return filename, content
 
-    async def _get_current_chapter_index(self):
+    async def chapter_index(self):
         if not self.state.current_project_id or not self.state.current_chapter_id: return 0
         chs = await self.services.pm.get_chapters(self.state.current_project_id)
         for i, c in enumerate(chs):
@@ -105,13 +106,8 @@ class Session:
     # ==========================
     @safe_sync
     def refresh_graph_ui(self):
-        engine, chart = self.graph_engine, self.state.ui['graph_chart']
-        if not engine or not chart: return
-        data = engine.get_visualization_data()
-        if data['nodes']:
-            chart.options['series'][0]['data'] = data['nodes']
-            chart.options['series'][0]['links'] = data['links']
-            chart.update()
+        if self.graph_view and self.graph_engine:
+            self.graph_view.show(self.graph_engine)
 
     async def bg_build_graph(self, pid, chapter_ids=None):
         """后台更新图谱：只分析内容有变化的章节（可限定章节）。在后台任务中运行，进度显示在状态栏。"""
@@ -296,7 +292,7 @@ class Session:
             text=text,
             instruction=instr,
             project_id=self.state.current_project_id,
-            chapter_index=await self._get_current_chapter_index(),
+            chapter_index=await self.chapter_index(),
             persona=self.state.active_system_prompt or "",
         )
 
@@ -304,26 +300,29 @@ class Session:
         ui.notify('军师分析中...', type='info')
         return await self.services.refine.analyze(await self.refine_request(text, instr))
 
-    async def rewrite_segment(self, seg, instr, dialog_callback=None):
-        """单段精修。dialog_callback 为空（批量）时审校不通过自动重试。Writer 失败抛 LLMError。"""
+    async def rewrite_segment(self, seg, instr, ask=None):
+        """单段精修。ask(review, text, can_retry) 在审校未通过时询问用户，返回修改意见或 None（接受）；
+        为空时按审校意见自动重试。Writer 失败抛 LLMError。"""
         target = seg['original'] or ""
         if not target.strip(): return
 
         def show(text):
             if seg.get('ui_component'): seg['ui_component'].value = text
 
-        on_reject = None
+        result = await self.refine(await self.refine_request(target, instr), show, ask)
+        seg['revised'] = result.text
+        return result
+
+    async def refine(self, request, on_text, ask=None):
+        """走统一精修流程；结束后对审校失败或最终未通过给出提示（用户已在弹窗里看过的除外）。"""
         asked = []
-        if dialog_callback:
+        on_reject = None
+        if ask:
             async def on_reject(review, text, can_retry):
                 asked.append(review)
-                action = await dialog_callback(seg, {'score': review.score, 'suggestion': review.suggestion}, text,
-                                               can_retry=can_retry)
-                if action['action'] != 'retry': return None
-                return action.get('feedback') or review.suggestion
+                return await ask(review, text, can_retry)
 
-        result = await self.services.refine.refine(await self.refine_request(target, instr), on_text=show, on_reject=on_reject)
-        seg['revised'] = result.text
+        result = await self.services.refine.refine(request, on_text=on_text, on_reject=on_reject)
         self.notify_review(result.review, asked)
         return result
 
@@ -339,48 +338,11 @@ class Session:
     # ==========================
     # Batch Task
     # ==========================
-    async def open_batch_console(self, instruction=""):
+    async def run_batch(self, ids, instruction="", create_backup=True):
+        """批量精修指定章节；create_backup 时先复制项目，在副本上改写。"""
         state = self.state
-        if not state.current_project_id: return ui.notify('请先导入', type='warning')
-        if state.is_batch_running: return ui.notify('已有批量任务在运行', type='warning')
-        all_chs = await self.services.pm.get_chapters(state.current_project_id)
-        remaining = await self.services.batch.remaining_chapters(state.current_project_id)
-        task_conf = {'scope': 'current', 'create_backup': True, 'selected': [], 'instruction': instruction}
-
-        def render_ch_list(container):
-            container.clear()
-            with container:
-                scope = task_conf['scope']; targets = []
-                if scope == 'current' and state.current_chapter_id:
-                    targets = [c for c in all_chs if c['id'] == state.current_chapter_id]
-                elif scope == 'all': targets = all_chs
-                elif scope == 'resume': targets = remaining
-                task_conf['selected'] = [c['id'] for c in targets]
-                for c in targets: ui.label(c['title']).classes('text-sm border-b')
-
-        with ui.dialog() as d, ui.card().classes('w-full max-w-3xl'):
-            ui.label('批量任务').classes('text-lg font-bold')
-            with ui.row().classes('w-full gap-4'):
-                with ui.column().classes('w-1/3'):
-                    ui.radio({'current': '本章', 'all': '全书', 'resume': f'继续上次进度（剩 {len(remaining)} 章）'},
-                             value='current', on_change=lambda: render_ch_list(ch_area)).bind_value(task_conf, 'scope')
-                    ui.checkbox('创建副本（在副本上改写，原项目不动）', value=True).bind_value(task_conf, 'create_backup') \
-                        .bind_visibility_from(task_conf, 'scope', backward=lambda s: s != 'resume')
-                with ui.column().classes('w-2/3'):
-                    ch_area = ui.scroll_area().classes('h-48 border rounded p-2 w-full')
-                    render_ch_list(ch_area)
-            with ui.row().classes('w-full justify-end'):
-                ui.button('启动', on_click=lambda: self.start_batch_execution(task_conf, d)).props('color=indigo')
-        d.open()
-
-    async def start_batch_execution(self, conf, dlg):
-        state = self.state
-        ids = list(conf['selected'])
-        if not ids: return ui.notify('无章节')
-        dlg.close()
-
         pid = state.current_project_id
-        if conf['create_backup'] and conf['scope'] != 'resume':
+        if create_backup:
             ui.notify('备份中...')
             pid, mapping = await self.services.batch.make_backup(pid)
             ids = [mapping[i] for i in ids]
@@ -395,7 +357,7 @@ class Session:
         state.is_batch_running = True; state.stop_signal = False
         self.update_status("批量任务启动...", 0.0)
         try:
-            outcome = await self.services.batch.run(pid, ids, conf.get('instruction') or DEFAULT_INSTRUCTION,
+            outcome = await self.services.batch.run(pid, ids, instruction or DEFAULT_INSTRUCTION,
                                                     on_progress=progress, should_stop=lambda: state.stop_signal)
         finally:
             state.is_batch_running = False
@@ -414,24 +376,3 @@ class Session:
         self.update_status(f'批量：{summary}', 1.0)
         if state.current_chapter_id and state.current_project_id == pid:
             await self.load_chapter(state.current_chapter_id)  # 刷新编辑器里的当前章
-
-    # ==========================
-    # Chat Logic
-    # ==========================
-    async def send_chat_msg(self):
-        ui_refs = self.state.ui
-        chat_input = ui_refs.get('chat_input')
-        if not chat_input: return ui.notify("输入框未就绪", type='warning')
-        msg = chat_input.value; chat_input.value = ""
-        if not msg: return
-
-        with ui_refs['chat_container']: ui.label(msg).classes('chat-bubble chat-user')
-        mode = ui_refs['chat_mode'].value if ui_refs['chat_mode'] else 'chapter'
-        with ui_refs['chat_container']: bubble = ui.label('Thinking...').classes('chat-bubble chat-ai')
-        res = ""
-        try:
-            async for t in self.services.chat.answer(msg, self.state.current_project_id,
-                                                     await self._get_current_chapter_index(), self.current_text(), mode):
-                res += t; bubble.text = res
-        except LLMError as e:
-            bubble.text = f"出错：{e}"

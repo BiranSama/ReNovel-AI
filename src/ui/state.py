@@ -11,6 +11,7 @@ class AppState:
 
         self.segments = []
         self.full_text_draft = ""
+        self.instruction = ""  # 底部的全局精修指令
 
         # --- 状态 ---
         self.view_mode = 'segment'
@@ -22,15 +23,9 @@ class AppState:
         self.ui = {
             'status_label': None,
             'status_progress': None,
-            'persona_label': None,
             'project_title': None,
             'project_list': None,
             'chapter_list': None,
             'backup_list': None,
             'backup_dialog': None,
-            'graph_chart': None,
-            'chat_mode': None,
-            'chat_container': None,
-            'chat_input': None,
-            'full_text_area': None,
         }
