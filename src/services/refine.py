@@ -23,7 +23,7 @@ STYLE_REVIEW_INSTRUCTION = (
     "另外对照文风档案给出文风贴合度（0 到 10 的整数），总分也要考虑文风是否贴合。"
     '在 JSON 里加上 "style_score" 字段。'
 )
-MAX_STYLE_SAMPLES = 3
+MAX_STYLE_SAMPLES = 3  # 与 src.services.style.MAX_SAMPLES 一致
 
 
 def excerpt(text: str, limit: int = REVIEW_EXCERPT_CHARS) -> str:
@@ -89,6 +89,9 @@ def style_text(style) -> str:
     return style.description + (f"\n示例：\n{samples}" if samples else "")
 
 
+_LOAD = object()  # review() 的 style 参数缺省值：读取当前的文风档案
+
+
 # 审校未通过时询问用户：返回修改意见则据此重写，返回 None 表示接受当前结果。
 # 第三个参数 can_retry 为 False 表示已达最多重试次数，这次询问只能接受当前结果
 OnReject = Callable[[Review, str, bool], Awaitable[Optional[str]]]
@@ -117,17 +120,18 @@ class RefinePipeline:
         ask_user = on_reject is not None and self.settings.get_review_mode() == "manual"
         max_attempts = 1 + self.settings.get_max_review_retries() if reviewing else 1
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "reader")
-        style = await self._style(request.project_id)
 
         feedback = ""
         attempts = 0
         while True:
             attempts += 1
+            # 每次尝试都重新读取文风档案，写与审用同一份（重试期间档案被修改也不会前后不一致）
+            style = await self._style(request.project_id)
             text = await self._write(request, references, feedback, on_text, style)
             if not reviewing:
                 return RefineResult(text, None, attempts)
 
-            review = await self.review(request, text)
+            review = await self.review(request, text, style)
             if review.passed:
                 return RefineResult(text, review, attempts)
 
@@ -142,10 +146,14 @@ class RefinePipeline:
             else:
                 feedback = review.feedback
 
-    async def review(self, request: RefineRequest, candidate: str) -> Review:
-        """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
+    async def review(self, request: RefineRequest, candidate: str, style=_LOAD) -> Review:
+        """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。
+
+        style 为写这一稿时用的文风档案；不传时读取当前的档案。
+        """
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
-        style = await self._style(request.project_id)
+        if style is _LOAD:
+            style = await self._style(request.project_id)
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("文风档案", style_text(style)),

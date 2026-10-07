@@ -3,7 +3,7 @@ from nicegui import ui
 
 from src.core.style_store import StyleProfile
 from src.llm import LLMError
-from src.services.style import PRESET_NAMES, StyleExtractError
+from src.services.style import MAX_SAMPLES, PRESET_NAMES, StyleExtractError
 
 
 class StylePanel:
@@ -43,8 +43,11 @@ class StylePanel:
                     ui.button(icon='close', on_click=lambda i=i: (profile.samples.pop(i), self._render())) \
                         .props('flat round dense size=sm color=grey')
             with ui.row().classes('w-full justify-between'):
-                ui.button('添加段落', icon='add', on_click=lambda: (profile.samples.append(''), self._render())) \
-                    .props('flat dense size=sm')
+                if len(profile.samples) < MAX_SAMPLES:  # 改写和审校最多用这么多段
+                    ui.button('添加段落', icon='add', on_click=lambda: (profile.samples.append(''), self._render())) \
+                        .props('flat dense size=sm')
+                else:
+                    ui.label(f'最多 {MAX_SAMPLES} 段').classes('text-xs text-gray-400')
                 ui.button('保存文风', icon='save', on_click=self.save).props('unelevated dense color=indigo')
 
     async def save(self):
@@ -72,10 +75,14 @@ class StylePanel:
         if not pid: return ui.notify('请先打开项目', type='warning')
         self.extract_button.props('loading')
         try:
-            self.profile = await self.session.services.style.extract(pid)
+            profile = await self.session.services.style.extract(pid)
         except (LLMError, StyleExtractError) as e:
             return ui.notify(f'提炼文风失败：{e}', type='negative')
         finally:
             self.extract_button.props(remove='loading')
+        if pid != self.session.state.current_project_id:  # 提炼期间切换了项目：结果已存到原项目，面板显示当前项目
+            await self.refresh()
+            return ui.notify('文风已提炼并保存到原来的项目')
+        self.profile = profile
         self._render()
         ui.notify('已从原文提炼文风档案')
