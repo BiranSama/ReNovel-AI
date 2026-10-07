@@ -52,18 +52,19 @@ class BatchOutcome:
 
 
 class BatchService:
-    def __init__(self, projects, refine, memory=None, chapter_store=None):
+    def __init__(self, projects, refine, memory=None, chapter_store=None, style_store=None):
         self.projects = projects            # ProjectManager
         self.refine = refine                # RefinePipeline
         self.memory = memory                # RAGEngine，可选
         self.chapter_store = chapter_store  # ChapterMemoryStore，可选
+        self.style_store = style_store      # StyleStore，可选
         self._running: set[str] = set()     # 正在批量改写的项目（所有标签页共享）
 
     def is_running(self, project_id: str) -> bool:
         return project_id in self._running
 
     async def make_backup(self, project_id: str, suffix: str = BACKUP_SUFFIX) -> tuple[str, dict[str, str]]:
-        """复制项目（含向量记忆、章节记忆与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
+        """复制项目（含向量记忆、章节记忆、文风档案与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
         backup_id = await self.projects.duplicate_project(project_id, suffix)
         originals = await self.projects.get_chapters(project_id)
         copies = await self.projects.get_chapters(backup_id)
@@ -72,6 +73,8 @@ class BatchService:
             await self.memory.aclone_project_memory(project_id, backup_id, mapping)
         if self.chapter_store:
             await self.chapter_store.clone(project_id, backup_id, mapping)
+        if self.style_store:
+            await self.style_store.clone(project_id, backup_id)
         clone_graph(project_id, backup_id, mapping)
         return backup_id, mapping
 

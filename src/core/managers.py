@@ -14,6 +14,8 @@ from src.services.chat import ChatService
 from src.services.graph import GraphService
 from src.services.chapter_memory import ChapterMemoryService
 from src.services.characters import CharacterService
+from src.services.style import StyleService
+from src.core.style_store import StyleStore
 from src.core.chapter_memory_store import ChapterMemoryStore
 from src.utils.logger import ConsoleLogger as Log
 # 容错导入 GraphEngine
@@ -48,17 +50,20 @@ class Services:
         self.graphs = GraphStore()
         self.chapter_store = ChapterMemoryStore()
         context = ContextBuilder(self.rag, self.graphs.get, projects=self.pm, chapter_store=self.chapter_store)
-        self.refine = RefinePipeline(self.llm, self.settings, context)
+        self.style_store = StyleStore()
+        self.refine = RefinePipeline(self.llm, self.settings, context, styles=self.style_store)
+        self.style = StyleService(self.llm, self.settings, self.pm, self.style_store)
         self.chat = ChatService(self.llm, self.settings, context)
         self.graph = GraphService(self.llm, self.settings, self.pm)
         self.chapter_memory = ChapterMemoryService(self.llm, self.settings, self.pm, self.chapter_store)
         self.characters = CharacterService(self.pm, self.chapter_store, self.graphs.get)
-        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store)
+        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store, self.style_store)
 
     async def init_db(self):
         """在 app.on_startup 时调用"""
         await self.pm.init_db()
         await self.chapter_store.init_db()
+        await self.style_store.init_db()
         if self.rag.needs_migration():
             asyncio.create_task(self.migrate_legacy_memory())
 
