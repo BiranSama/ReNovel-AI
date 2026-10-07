@@ -1,4 +1,6 @@
 """应用级服务：启动时创建一次，所有浏览器标签页共享。每个标签页自己的状态在 src/ui/session.py。"""
+import asyncio
+
 from src import paths
 from src.core.project_manager import ProjectManager
 from src.llm import LLMClient
@@ -10,6 +12,7 @@ from src.services.refine import RefinePipeline
 from src.services.batch import BatchService
 from src.services.chat import ChatService
 from src.services.graph import GraphService
+from src.utils.logger import ConsoleLogger as Log
 # 容错导入 GraphEngine
 try:
     from src.core.graph_engine import GraphEngine
@@ -37,8 +40,8 @@ class Services:
         self.pm = ProjectManager()
         self.llm = LLMClient()
         self.tavern = TavernParser()
-        self.rag = RAGEngine()
         self.settings = AppSettings()
+        self.rag = RAGEngine(lambda: self.settings.config.get("embedding", {}))
         self.graphs = GraphStore()
         context = ContextBuilder(self.rag, self.graphs.get)
         self.refine = RefinePipeline(self.llm, self.settings, context)
@@ -49,3 +52,15 @@ class Services:
     async def init_db(self):
         """在 app.on_startup 时调用"""
         await self.pm.init_db()
+        if self.rag.needs_migration():
+            asyncio.create_task(self.migrate_legacy_memory())
+
+    async def migrate_legacy_memory(self):
+        """旧版本的 ChromaDB 记忆：从已保存的章节正文重建到新的向量库（后台进行，不影响启动）。"""
+        Log.system("[RAG] 发现旧版本的向量记忆，正在从已保存的章节重建……")
+        for project in await self.pm.get_projects():
+            for chapter in await self.pm.get_chapters(project["id"]):
+                text = await self.pm.get_chapter_content(chapter["id"]) or ""
+                await self.rag.aindex_chapter(project["id"], chapter["id"], text)
+        self.rag.mark_migrated()
+        Log.system("[RAG] 记忆迁移完成，旧的 data/vectordb 目录可以删除")

@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
 CALLS: list[dict] = []
+EMBEDDING_CALLS: list[int] = []
 
 REWRITE_MARK = "【FAKE改写】"
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
@@ -50,6 +51,29 @@ def models():
 @app.get("/calls")
 def calls():
     return CALLS
+
+
+def char_vector(text: str, dim: int = 64) -> list[float]:
+    """按字符计数的确定性向量：共用字越多越相似，足够让检索结果可预测。"""
+    vector = [0.0] * dim
+    for ch in text:
+        vector[ord(ch) % dim] += 1.0
+    return vector
+
+
+@app.post("/v1/embeddings")
+async def embeddings(req: Request):
+    body = await req.json()
+    texts = body["input"] if isinstance(body["input"], list) else [body["input"]]
+    EMBEDDING_CALLS.append(len(texts))
+    return {"object": "list", "model": body.get("model"),
+            "data": [{"object": "embedding", "index": i, "embedding": char_vector(t)} for i, t in enumerate(texts)],
+            "usage": {"prompt_tokens": 1, "total_tokens": 1}}
+
+
+@app.get("/embedding_calls")
+def embedding_calls():
+    return EMBEDDING_CALLS
 
 
 @app.post("/v1/chat/completions")

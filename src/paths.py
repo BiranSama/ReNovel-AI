@@ -27,7 +27,18 @@ def projects_dir() -> Path:
 
 
 def vectordb_dir() -> Path:
+    """旧版本的 ChromaDB 目录，只在迁移时读取。"""
     return data_dir() / "vectordb"
+
+
+def memory_db() -> Path:
+    """向量记忆（SQLite）。"""
+    return data_dir() / "memory.db"
+
+
+def models_dir() -> Path:
+    """下载的本地模型（如向量模型）。"""
+    return data_dir() / "models"
 
 
 def presets_dir() -> Path:
@@ -48,6 +59,6 @@ def graph_file(project_id: str) -> Path:
 
 def ensure_dirs() -> Path:
     """创建所有数据子目录，返回数据根目录。"""
-    for directory in (projects_dir(), vectordb_dir(), presets_dir()):
+    for directory in (projects_dir(), models_dir(), presets_dir()):
         directory.mkdir(parents=True, exist_ok=True)
     return data_dir()

@@ -31,8 +31,8 @@ class FakeMemory:
     async def aindex_chapter(self, project_id, chapter_id, text):
         self.indexed.append((project_id, chapter_id, text))
 
-    async def aclone_project_memory(self, old, new):
-        self.cloned.append((old, new))
+    async def aclone_project_memory(self, old, new, chapter_map=None):
+        self.cloned.append((old, new, chapter_map))
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def test_backup_maps_chapters_and_leaves_original_untouched(setup, tmp_path, mon
 
     original_ids = chapter_ids(pm, pid)
     assert list(mapping) == original_ids and list(mapping.values()) == chapter_ids(pm, backup)
-    assert memory.cloned == [(pid, backup)]
+    assert memory.cloned == [(pid, backup, mapping)]  # 记忆里的章节 id 也换成副本的
 
     assert [p["id"] for p in asyncio.run(pm.get_backups(pid))] == [backup]
     assert asyncio.run(pm.get_backups(backup)) == []

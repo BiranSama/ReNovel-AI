@@ -4,6 +4,7 @@
 """
 import copy
 
+from src.ai.embeddings import DEFAULT_API_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MIRROR
 from src.core.config_manager import ConfigManager
 from src.llm.client import needs_api_key
 
@@ -58,7 +59,10 @@ DEFAULT_FULL_CONFIG = {
     'review_threshold': 8,
     'review_mode': 'manual',     # manual：未通过时弹窗询问；auto：自动按审校意见重试
     'max_review_retries': 2,
-    'enable_nsfw_mode': False
+    'enable_nsfw_mode': False,
+    # 向量记忆：local 用本地中文模型（首次使用时下载），api 用 OpenAI 兼容的 /embeddings 接口
+    'embedding': {'provider': 'local', 'local_model': DEFAULT_LOCAL_MODEL, 'mirror': DEFAULT_MIRROR,
+                  'api_key': '', 'base_url': '', 'model': DEFAULT_API_MODEL, 'proxy': ''},
 }
 REVIEW_MODES = {'manual': '弹窗询问我', 'auto': '自动按意见重试'}
 

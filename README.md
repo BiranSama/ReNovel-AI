@@ -54,7 +54,7 @@
 ## 🌟 核心特性 (Features)
 
 ### 1. 🧠 全局记忆与一致性 (RAG Memory)
-告别"吃书"，系统内置 **ChromaDB** 向量数据库，自动记忆全书内容。
+告别"吃书"，系统内置向量记忆（SQLite + numpy），自动记忆全书内容。向量默认由本地中文模型 bge-small-zh 生成（首次使用时自动下载，可设置镜像），也可改用 OpenAI 兼容的 `/embeddings` 接口。
 * **智能检索**：当你改写第 100 章时，AI 会自动检索参考第 1 章的伏笔、设定和人物关系。
 * **智能联想**：即使你只写了"那把剑"，系统也能联想到"生锈的铁剑"并提取相关设定。
 * **一致性检查**：独立的 Reviewer AI 检测 OOC（角色崩坏）或逻辑漏洞。
@@ -189,7 +189,8 @@ pip install -r requirements.txt
 | 模块 | 技术方案 |
 | :--- | :--- |
 | Frontend | NiceGUI (Vue/FastAPI) |
-| Database | SQLite (Metadata) + ChromaDB (Vector) |
+| Database | SQLite（项目与章节；向量记忆用 SQLite + numpy） |
+| Embedding | 本地 ONNX 模型（onnxruntime + tokenizers，无需 PyTorch）或 `/embeddings` API |
 | AI Core | OpenAI Python SDK（OpenAI 兼容接口：OpenAI / DeepSeek / 各类中转 / Ollama；Gemini 走官方兼容端点） |
 | Knowledge Graph | NetworkX + ECharts |
 
@@ -199,7 +200,8 @@ ReNovel-AI/
 ├── data/                      # 用户数据 (运行 FirstTime.py 创建，已在 .gitignore 中忽略)
 │   ├── config.json            # 设置 (含 API Key，切勿提交)
 │   ├── projects/              # SQLite 数据库 + 知识图谱 JSON
-│   ├── vectordb/              # ChromaDB 向量索引
+│   ├── memory.db              # 向量记忆（旧版本的 vectordb/ 会在首次启动时自动迁移）
+│   ├── models/                # 下载的本地向量模型
 │   └── presets/               # 角色卡与预设
 ├── src/
 │   ├── services/              # 业务层（不依赖界面）：精修流程、导入、批量、聊天、图谱、上下文检索
