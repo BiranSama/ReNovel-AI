@@ -16,6 +16,7 @@ from src.llm.presets import CUSTOM, PRESET_NAMES, apply_preset, detect_preset, f
 ROLES = [
     ('writer', 'Writer (作家)', 'edit_note'),
     ('analyzer', 'Analyzer (军师)', 'psychology'),
+    ('memory', 'Memory (章节记忆)', 'auto_stories'),
     ('graph', 'Graph (图谱)', 'hub'),
     ('reviewer', 'Reviewer (总监)', 'gavel'),
     ('chat', 'Chat (助手)', 'chat'),

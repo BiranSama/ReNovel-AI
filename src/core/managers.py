@@ -12,6 +12,8 @@ from src.services.refine import RefinePipeline
 from src.services.batch import BatchService
 from src.services.chat import ChatService
 from src.services.graph import GraphService
+from src.services.chapter_memory import ChapterMemoryService
+from src.core.chapter_memory_store import ChapterMemoryStore
 from src.utils.logger import ConsoleLogger as Log
 # 容错导入 GraphEngine
 try:
@@ -47,11 +49,14 @@ class Services:
         self.refine = RefinePipeline(self.llm, self.settings, context)
         self.chat = ChatService(self.llm, self.settings, context)
         self.graph = GraphService(self.llm, self.settings, self.pm)
-        self.batch = BatchService(self.pm, self.refine, self.rag)
+        self.chapter_store = ChapterMemoryStore()
+        self.chapter_memory = ChapterMemoryService(self.llm, self.settings, self.pm, self.chapter_store)
+        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store)
 
     async def init_db(self):
         """在 app.on_startup 时调用"""
         await self.pm.init_db()
+        await self.chapter_store.init_db()
         if self.rag.needs_migration():
             asyncio.create_task(self.migrate_legacy_memory())
 

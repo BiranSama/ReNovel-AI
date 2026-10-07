@@ -43,7 +43,8 @@ class Session:
         self.services = services
         self.state = state or AppState()
         self._renderer = None
-        self.graph_view = None  # 图谱面板，由界面注册
+        self.graph_view = None   # 图谱面板，由界面注册
+        self.memory_view = None  # 章节记忆面板，由界面注册
 
     @property
     def graph_engine(self):
@@ -132,6 +133,48 @@ class Session:
         asyncio.create_task(self.bg_build_graph(self.state.current_project_id))
 
     # ==========================
+    # 2b. 章节记忆
+    # ==========================
+    async def refresh_memory_ui(self):
+        if self.memory_view:
+            try: await self.memory_view.refresh()
+            except RuntimeError: pass  # 页面已关闭
+
+    async def bg_update_memory(self, pid, chapter_ids=None):
+        """后台整理章节记忆（只整理内容有变化的章节）。已有任务在跑时，把这些章节排到它后面。"""
+        state = self.state
+        pending = state.memory_pending.setdefault(pid, set())
+        if chapter_ids is None: pending.add(None)  # None 表示全部章节
+        else: pending.update(chapter_ids)
+        if state.memory_task_running: return
+        state.memory_task_running = True
+        try:
+            while state.memory_pending.get(pid):
+                wanted = state.memory_pending.pop(pid)
+                ids = None if None in wanted else wanted
+                self.update_status("章节记忆整理中...", 0.0)
+                updated = await self.services.chapter_memory.update(
+                    pid, on_progress=self.update_status, chapter_ids=ids)
+                self.update_status(f"章节记忆已更新：整理了 {updated} 章", 1.0)
+        except LLMError as e:
+            state.memory_pending.pop(pid, None)
+            self.update_status(f"章节记忆整理失败：{e}", 1.0)
+        finally:
+            state.memory_task_running = False
+        if pid == state.current_project_id:
+            await self.refresh_memory_ui()
+
+    async def update_memory_incrementally(self):
+        if not self.state.current_project_id: return
+        ui.notify('正在整理有变化的章节...')
+        asyncio.create_task(self.bg_update_memory(self.state.current_project_id))
+
+    async def bg_analyze(self, pid):
+        """导入后整理全书：先整理章节记忆，再建立人物图谱。"""
+        await self.bg_update_memory(pid)
+        await self.bg_build_graph(pid)
+
+    # ==========================
     # 3. 项目与 IO
     # ==========================
     def register_renderer(self, func):
@@ -177,6 +220,7 @@ class Session:
             except RuntimeError: pass
 
         self.refresh_graph_ui()
+        await self.refresh_memory_ui()
         chs = await self.services.pm.get_chapters(pid)
         if chs: await self.load_chapter(chs[0]['id'])
         else: await self.refresh_chapter_list()
@@ -211,7 +255,9 @@ class Session:
             await self.services.pm.update_chapter_content(cid, txt)
             if pid:
                 await self.services.rag.aindex_chapter(pid, cid, txt)
-                # 已建立图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）
+                # 已整理过记忆 / 建立了图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）
+                if await self.services.chapter_store.has_any(pid):
+                    asyncio.create_task(self.bg_update_memory(pid, {cid}))
                 if self.graph_engine and self.graph_engine.is_built():
                     asyncio.create_task(self.bg_build_graph(pid, {cid}))
             ui.notify('✅ 已保存（记忆已更新）')
@@ -239,7 +285,8 @@ class Session:
             if txt: await self.services.rag.aindex_chapter(pid, c['id'], txt)
 
         with ui.dialog() as d, ui.card():
-            ui.label('📚 建立图谱?').classes('font-bold')
+            ui.label('📚 整理章节记忆并建立人物图谱？').classes('font-bold')
+            ui.label('会调用模型逐章分析，可稍后在右侧栏手动整理').classes('text-xs text-gray-500')
             with ui.row():
                 ui.button('否', on_click=lambda: d.submit(False)).props('flat')
                 ui.button('是', on_click=lambda: d.submit(True)).props('color=indigo')
@@ -251,7 +298,7 @@ class Session:
         await self.refresh_project_list()
 
         if should_build:
-            asyncio.create_task(self.bg_build_graph(pid))
+            asyncio.create_task(self.bg_analyze(pid))
 
     async def create_backup(self):
         if not self.state.current_project_id: return

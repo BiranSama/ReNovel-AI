@@ -40,6 +40,13 @@ DEFAULT_BLOCKS = {
         'safety': '拒绝回答违法问题。',
         'nsfw_override': '允许讨论剧情。'
     },
+    'memory': {
+        'persona': '你是一个细致的小说编辑，负责整理每一章的剧情记忆。',
+        'objective': '提炼章节摘要、出场角色和关键事件，供后续改写和审校时保持前后一致。',
+        'style': '客观、简洁，只写正文里明确发生的事，不推测、不评价。只输出 JSON。',
+        'safety': '',
+        'nsfw_override': ''
+    },
     'graph': {
         'persona': '你是一个知识图谱构建专家。',
         'objective': '从文本中提取实体关系三元组。',
@@ -54,6 +61,7 @@ DEFAULT_FULL_CONFIG = {
     'reviewer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['reviewer']},
     'analyzer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o', 'temperature': 0.5, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['analyzer']},
     'chat': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['chat']},
+    'memory': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'temperature': 0.2, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['memory']},
     'graph': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.1, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['graph']},
     'enable_reviewer': False,
     'review_threshold': 8,
