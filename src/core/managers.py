@@ -1,6 +1,6 @@
 from src import paths
 from src.core.project_manager import ProjectManager
-from src.ai.llm_client import LLMClient
+from src.llm import LLMClient
 from src.core.tavern_parser import TavernParser
 from src.ai.rag_engine import RAGEngine
 # 容错导入 GraphEngine

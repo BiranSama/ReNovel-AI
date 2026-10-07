@@ -3,7 +3,7 @@ import json
 import os
 import re
 import asyncio
-from src.ai.llm_client import LLMClient
+from src.llm import LLMClient
 from src.utils.logger import ConsoleLogger as Log
 from src import paths
 

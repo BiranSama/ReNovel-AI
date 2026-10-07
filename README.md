@@ -190,7 +190,7 @@ pip install -r requirements.txt
 | :--- | :--- |
 | Frontend | NiceGUI (Vue/FastAPI) |
 | Database | SQLite (Metadata) + ChromaDB (Vector) |
-| AI Core | LangChain (OpenAI 兼容接口 / Google Gemini) |
+| AI Core | OpenAI Python SDK（OpenAI 兼容接口：OpenAI / DeepSeek / 各类中转 / Ollama；Gemini 走官方兼容端点） |
 | Knowledge Graph | NetworkX + ECharts |
 
 ## 📂 目录结构
@@ -202,11 +202,13 @@ ReNovel-AI/
 │   ├── vectordb/              # ChromaDB 向量索引
 │   └── presets/               # 角色卡与预设
 ├── src/
-│   ├── ai/                    # LLM 客户端、RAG 向量记忆
+│   ├── ai/                    # RAG 向量记忆
+│   ├── llm/                   # 统一 LLM 客户端（OpenAI 兼容接口）
 │   ├── core/                  # 项目/章节管理、配置、知识图谱、酒馆角色卡解析
 │   ├── logic/handlers.py      # 业务流程 (导入、改写、审校、批量、聊天、图谱)
 │   ├── ui/                    # NiceGUI 界面 (主布局、面板、设置弹窗、全局状态)
-│   └── utils/logger.py        # 彩色控制台日志
+│   ├── utils/logger.py        # 彩色控制台日志
+│   └── paths.py               # 数据目录（开发 / exe / RENOVEL_DATA_DIR）
 ├── FirstTime.py               # 初始化数据目录
 └── main.py                    # 启动入口
 ```

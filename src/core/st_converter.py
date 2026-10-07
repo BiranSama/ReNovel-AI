@@ -1,5 +1,5 @@
 import json
-from src.ai.llm_client import LLMClient
+from src.llm import LLMClient
 
 class STConverter:
     def __init__(self):
