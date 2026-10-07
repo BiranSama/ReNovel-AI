@@ -11,6 +11,7 @@ class AppState:
 
         self.segments = []
         self.full_text_draft = ""
+        self.full_text_history = []  # 全文工作台里被 AI 重写替换掉的草稿，撤销时恢复
         self.instruction = ""  # 底部的全局精修指令
 
         # --- 状态 ---

@@ -6,6 +6,9 @@ from datetime import datetime
 from src import paths
 from src.services.importer import split_chapters
 
+MAX_VERSIONS = 20  # 每章保留的历史版本数
+
+
 class ProjectManager:
     def __init__(self):
         self.db_path = str(paths.db_file())
@@ -31,6 +34,15 @@ class ProjectManager:
                     FOREIGN KEY(project_id) REFERENCES projects(id)
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS chapter_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chapter_id TEXT NOT NULL,
+                    content TEXT,
+                    created_at TEXT
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_chapter_versions ON chapter_versions (chapter_id)")
             await db.commit()
 
     # --- 基础 CRUD ---
@@ -107,9 +119,26 @@ class ProjectManager:
             return (row[0] or "") if row else None  # 章节不存在返回 None；空章节返回 ""
 
     async def update_chapter_content(self, chapter_id: str, new_content: str):
+        """保存章节；内容有变化时把旧内容留作历史版本（每章保留最近 MAX_VERSIONS 个），可以恢复。"""
         async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT content FROM chapters WHERE id = ?", (chapter_id,))
+            row = await cursor.fetchone()
+            if row and (row[0] or "") != new_content and (row[0] or "").strip():
+                await db.execute("INSERT INTO chapter_versions (chapter_id, content, created_at) VALUES (?, ?, ?)",
+                                 (chapter_id, row[0], datetime.now().isoformat(timespec="seconds")))
+                await db.execute("DELETE FROM chapter_versions WHERE chapter_id = ? AND id NOT IN "
+                                 "(SELECT id FROM chapter_versions WHERE chapter_id = ? ORDER BY id DESC LIMIT ?)",
+                                 (chapter_id, chapter_id, MAX_VERSIONS))
             await db.execute("UPDATE chapters SET content = ? WHERE id = ?", (new_content, chapter_id))
             await db.commit()
+
+    async def get_chapter_versions(self, chapter_id: str) -> list[dict]:
+        """章节的历史版本，最新的在前。"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT id, content, created_at FROM chapter_versions WHERE chapter_id = ? "
+                                      "ORDER BY id DESC", (chapter_id,))
+            return [dict(row) for row in await cursor.fetchall()]
 
     # --- 新增：进度存取 ---
     async def save_progress(self, project_id: str, chapter_id: str):

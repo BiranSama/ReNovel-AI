@@ -11,7 +11,9 @@ from nicegui import ui
 from src.llm import LLMError
 from src.services.batch import BACKUP_SUFFIX, DEFAULT_INSTRUCTION
 from src.services.importer import UnsupportedEncoding, decode_text
+from src.services import segments
 from src.services.refine import RefineRequest
+from src.services.segments import split_text
 from src.ui.state import AppState
 
 
@@ -32,10 +34,6 @@ def safe_async(func):
         except RuntimeError: pass
     return wrapper
 
-def split_text(text):
-    if not text: return []
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    return [{'original': line, 'revised': ''} for line in lines]
 
 
 class Session:
@@ -74,11 +72,8 @@ class Session:
         return self.state.full_text_draft if self.state.view_mode == 'full' else self.merge_text()
 
     def merge_text(self):
-        lines = []
-        for seg in self.state.segments:
-            content = seg['revised'] if seg['revised'] else seg['original']
-            if content.strip(): lines.append(content)
-        return "\n\n".join(lines)
+        """分段模式下各段生效的文字（采纳了候选用候选，否则用原文）。"""
+        return segments.merge(self.state.segments)
 
     async def _extract_upload_info(self, e):
         filename = "unknown_file"
@@ -207,9 +202,8 @@ class Session:
         if c is not None:  # 空章节（内容被清空并保存）也要能选中
             self.state.current_chapter_id = cid
             self.state.segments = split_text(c)
-            # 同步全文草稿
-            lines = [s['revised'] if s['revised'] else s['original'] for s in self.state.segments]
-            self.state.full_text_draft = "\n\n".join(lines)
+            self.state.full_text_draft = segments.merge(self.state.segments)  # 同步全文草稿
+            self.state.full_text_history = []
             self._render()
             await self.refresh_chapter_list()
 
@@ -264,6 +258,18 @@ class Session:
                 if self.graph_engine and self.graph_engine.is_built():
                     asyncio.create_task(self.bg_build_graph(pid, {cid}))
             ui.notify('✅ 已保存（记忆已更新）')
+
+    async def chapter_versions(self):
+        if not self.state.current_chapter_id: return []
+        return await self.services.pm.get_chapter_versions(self.state.current_chapter_id)
+
+    def restore_version(self, content):
+        """把历史版本放回编辑器（作为原文），保存后才写入；当前保存的内容会留作新的历史版本。"""
+        self.state.segments = split_text(content)
+        self.state.full_text_draft = segments.merge(self.state.segments)
+        self.state.full_text_history = []
+        self._render()
+        ui.notify('已恢复到编辑器，点「保存」后生效')
 
     # ==========================
     # 4. 文件处理
@@ -360,7 +366,7 @@ class Session:
             if seg.get('ui_component'): seg['ui_component'].value = text
 
         result = await self.refine(await self.refine_request(target, instr), show, ask)
-        seg['revised'] = result.text
+        segments.propose(seg, result.text)
         return result
 
     async def refine(self, request, on_text, ask=None):
