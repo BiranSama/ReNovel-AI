@@ -59,7 +59,7 @@ class BatchService:
         """复制项目（含向量记忆与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
         backup_id = await self.projects.duplicate_project(project_id, suffix)
         if self.memory:
-            self.memory.clone_project_memory(project_id, backup_id)
+            await self.memory.aclone_project_memory(project_id, backup_id)
         clone_graph(project_id, backup_id)
         originals = await self.projects.get_chapters(project_id)
         copies = await self.projects.get_chapters(backup_id)
@@ -109,7 +109,7 @@ class BatchService:
             content = join_paragraphs(revised)
             await self.projects.update_chapter_content(chapter["id"], content)
             if self.memory:
-                self.memory.index_chapter(project_id, chapter["id"], content)
+                await self.memory.aindex_chapter(project_id, chapter["id"], content)
             await self.projects.save_progress(project_id, chapter["id"])
             outcome.chapters_done += 1
 

@@ -214,7 +214,7 @@ class Session:
         if cid:
             await self.services.pm.update_chapter_content(cid, txt)
             if pid:
-                self.services.rag.index_chapter(pid, cid, txt)
+                await self.services.rag.aindex_chapter(pid, cid, txt)
                 # 已建立图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）
                 if self.graph_engine and self.graph_engine.is_built():
                     asyncio.create_task(self.bg_build_graph(pid, {cid}))
@@ -228,7 +228,8 @@ class Session:
         if not cbytes: return ui.notify("文件错误", type='negative')
 
         try:
-            content = decode_text(cbytes)  # 自动识别 UTF-8 / GBK / Big5 等，不再静默丢字
+            # 自动识别 UTF-8 / GBK / Big5 等；大文件检测耗时，放到线程里
+            content = await asyncio.to_thread(decode_text, cbytes)
         except UnsupportedEncoding as err:
             return ui.notify(str(err), type='negative')
         pm = self.services.pm
@@ -239,7 +240,7 @@ class Session:
         ui.notify('正在初始化向量记忆...', type='info')
         for c in await pm.get_chapters(pid):
             txt = await pm.get_chapter_content(c['id'])
-            if txt: self.services.rag.index_chapter(pid, c['id'], txt)
+            if txt: await self.services.rag.aindex_chapter(pid, c['id'], txt)
 
         with ui.dialog() as d, ui.card():
             ui.label('📚 建立图谱?').classes('font-bold')

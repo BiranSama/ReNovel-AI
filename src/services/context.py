@@ -12,7 +12,7 @@ QUERY_CHARS = 500  # 检索时只取开头一段：嵌入模型本身也会截�
 
 
 class MemorySearch(Protocol):
-    def search(self, query: str, project_id: str, n_results: int = 5) -> list[str]: ...
+    async def asearch(self, query: str, project_id: str, n_results: int = 5) -> list[str]: ...
 
 
 class RelationGraph(Protocol):
@@ -30,17 +30,17 @@ class ContextBuilder:
         self.graph_provider = graph_provider
         self.n_results = n_results
 
-    def gather(self, project_id: Optional[str], text: str, chapter_index: int, view: str = "reader") -> str:
+    async def gather(self, project_id: Optional[str], text: str, chapter_index: int, view: str = "reader") -> str:
         return join_sections(
-            section("相关记忆", self._memories(project_id, text)),
+            section("相关记忆", await self._memories(project_id, text)),
             section("人物关系", self._relations(project_id, text, chapter_index, view)),
         )
 
-    def _memories(self, project_id: Optional[str], text: str) -> str:
+    async def _memories(self, project_id: Optional[str], text: str) -> str:
         if not project_id or not self.memory or not text.strip():
             return ""
         # 多取一条：检索结果里通常有待改写的这段原文本身，需要排除
-        docs = self.memory.search(text[:QUERY_CHARS], project_id, self.n_results + 1)
+        docs = await self.memory.asearch(text[:QUERY_CHARS], project_id, self.n_results + 1)
         own = text.strip()
         docs = [d for d in docs if d.strip() and d.strip() not in own][: self.n_results]
         return "\n".join(f"- {d}" for d in docs)

@@ -28,10 +28,10 @@ class FakeMemory:
     def __init__(self):
         self.indexed, self.cloned = [], []
 
-    def index_chapter(self, project_id, chapter_id, text):
+    async def aindex_chapter(self, project_id, chapter_id, text):
         self.indexed.append((project_id, chapter_id, text))
 
-    def clone_project_memory(self, old, new):
+    async def aclone_project_memory(self, old, new):
         self.cloned.append((old, new))
 
 

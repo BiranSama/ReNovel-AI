@@ -60,7 +60,7 @@ class RefinePipeline:
         reviewing = self.settings.is_reviewer_enabled()
         ask_user = on_reject is not None and self.settings.get_review_mode() == "manual"
         max_attempts = 1 + self.settings.get_max_review_retries() if reviewing else 1
-        references = self.context.gather(request.project_id, request.text, request.chapter_index, "reader")
+        references = await self.context.gather(request.project_id, request.text, request.chapter_index, "reader")
 
         feedback = ""
         attempts = 0
@@ -84,7 +84,7 @@ class RefinePipeline:
 
     async def review(self, request: RefineRequest, candidate: str) -> Review:
         """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
-        references = self.context.gather(request.project_id, request.text, request.chapter_index, "author")
+        references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("原文", request.text),
@@ -107,7 +107,7 @@ class RefinePipeline:
 
     async def analyze(self, request: RefineRequest) -> str:
         """军师分析：评估改写指令的可行性与风险，输出简报。"""
-        references = self.context.gather(request.project_id, request.text, request.chapter_index, "author")
+        references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("改写指令", request.instruction),

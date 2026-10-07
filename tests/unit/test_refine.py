@@ -61,7 +61,7 @@ class FakeMemory:
     def __init__(self):
         self.views = []
 
-    def search(self, query, project_id, n_results=5):
+    async def asearch(self, query, project_id, n_results=5):
         return ["张三走进咖啡馆。", "李四早已等候多时。"]
 
 
