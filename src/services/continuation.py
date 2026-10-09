@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.llm.prompts import join_sections, section
+from src.services.context import QUERY_CHARS
 from src.services.refine import (STYLE_REVIEW_INSTRUCTION, OnReject, OnText, RefinePipeline, RefineResult,
                                  excerpt, style_samples, style_text, write_with_review)
 
@@ -44,6 +45,12 @@ def tail(text: str, limit: int) -> str:
     return text if len(text) <= limit else "……" + text[-limit:]
 
 
+def recent(text: str, limit: int) -> str:
+    """正文最后 limit 个字（离续写位置最近的部分）。"""
+    text = (text or "").strip()
+    return text[-limit:] if limit > 0 else ""
+
+
 def head(text: str, limit: int) -> str:
     text = (text or "").strip()
     return text if len(text) <= limit else text[:limit] + "……"
@@ -60,8 +67,10 @@ class ContinuationService:
                             on_reject: Optional[OnReject] = None) -> RefineResult:
         """生成续写草稿（不保存）。Writer 调用失败时抛出 LLMError。"""
         context = self.pipeline.context
-        # 检索参考资料时带上大纲：大纲里提到、前文末尾没出现的角色也能查到档案与关系
-        query = "\n".join(p for p in (tail(request.preceding, 500), request.outline.strip()) if p)
+        # 检索参考资料时带上大纲：大纲里提到、前文末尾没出现的角色也能查到档案与关系。
+        # 向量检索只看开头 QUERY_CHARS 字，所以大纲放在前面，剩下的位置给离续写位置最近的前文
+        outline = request.outline.strip()[:QUERY_CHARS]
+        query = "\n".join(p for p in (outline, recent(request.preceding, QUERY_CHARS - len(outline) - 1)) if p)
         references = await context.gather(request.project_id, query, request.chapter_index, "reader")
         hooks = await self.open_hooks(request.project_id, request.chapter_index)
         snapshot = {}
@@ -88,9 +97,9 @@ class ContinuationService:
 
         async def review(candidate: str):
             style = snapshot.get("style")
-            # 审校的资料按续写内容检索：续写里新出场的角色也要对照档案
-            author = await context.gather(request.project_id, f"{query}\n{candidate[:500]}", request.chapter_index,
-                                          "author")
+            # 审校的资料按续写内容检索（放在最前面，向量检索只看开头）：续写里新出场的角色也要对照档案
+            author = await context.gather(request.project_id, f"{candidate.strip()[:QUERY_CHARS]}\n{query}",
+                                          request.chapter_index, "author")
             return await self.pipeline.ask_reviewer(join_sections(
                 section("设定资料（作者视角）", author),
                 section("文风档案", style_text(style)),
@@ -118,9 +127,16 @@ class ContinuationService:
                 break
         return "\n".join(lines[-MAX_HOOKS:])
 
-    async def adopt_chapter(self, project_id: str, title: str, text: str) -> str:
-        """采纳续写的新章节：写入全书末尾并进入向量记忆，返回新章节 id。"""
-        chapter_id = await self.projects.add_chapter(project_id, title.strip() or "新章节", text.strip())
+    async def adopt_chapter(self, request: ContinueRequest, title: str, text: str) -> str:
+        """采纳续写的新章节：写入全书末尾并进入向量记忆，返回新章节 id。
+
+        草稿是接着生成时的最后一章写的：之后新增了章节或改了最后一章，就不能再接到末尾，抛出 ValueError。
+        """
+        chapter_id = await self.projects.add_chapter(
+            request.project_id, title.strip() or "新章节", text.strip(),
+            expected_tail=(request.chapter_index - 1, request.preceding))
+        if chapter_id is None:
+            raise ValueError("生成草稿后全书末尾有改动（新增了章节或改了最后一章），请重新生成")
         if self.rag:
-            await self.rag.aindex_chapter(project_id, chapter_id, text)
+            await self.rag.aindex_chapter(request.project_id, chapter_id, text)
         return chapter_id

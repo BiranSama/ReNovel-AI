@@ -2,6 +2,7 @@ import aiosqlite
 import uuid
 import json
 from datetime import datetime
+from typing import Optional
 
 from src import paths
 from src.services.importer import split_chapters
@@ -106,12 +107,25 @@ class ProjectManager:
         projects = await self.get_projects()
         return [p for p in projects if json.loads(p.get('world_settings') or '{}').get('backup_of') == project_id]
 
-    async def add_chapter(self, project_id: str, title: str, content: str) -> str:
-        """在全书末尾新增一章，返回章节 id。"""
+    async def add_chapter(self, project_id: str, title: str, content: str,
+                          expected_tail: Optional[tuple[int, str]] = None) -> Optional[str]:
+        """在全书末尾新增一章，返回章节 id。
+
+        给出 expected_tail（现有章节数, 最后一章正文）时，全书末尾已经变了（新增了章节或改了最后一章）就不追加，返回 None。
+        """
         chapter_id = str(uuid.uuid4())
         async with aiosqlite.connect(self.db_path) as db:
             # 独占事务：多个标签页同时追加章节时依次分配位置，不会得到相同的 order_index
             await db.execute("BEGIN IMMEDIATE")
+            if expected_tail is not None:
+                cursor = await db.execute("SELECT COUNT(*) FROM chapters WHERE project_id = ?", (project_id,))
+                count = (await cursor.fetchone())[0]
+                cursor = await db.execute("SELECT content FROM chapters WHERE project_id = ? "
+                                          "ORDER BY order_index DESC LIMIT 1", (project_id,))
+                row = await cursor.fetchone()
+                if (count, (row[0] or "") if row else "") != tuple(expected_tail):
+                    await db.rollback()
+                    return None
             cursor = await db.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM chapters WHERE project_id = ?",
                                       (project_id,))
             order_index = (await cursor.fetchone())[0]

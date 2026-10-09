@@ -109,6 +109,28 @@ def test_adopting_paragraphs_in_full_text_mode_keeps_them(monkeypatch):
     assert session.services.pm.saved["c1"] == "甲。\n\n续一。\n\n续二。\n\n乙。"
 
 
+def test_preparing_a_continuation_does_not_touch_paragraph_history(monkeypatch):
+    """全文工作台里打开续写、生成草稿：续写位置按全文草稿计算，但不改动各段的原文、候选与撤销历史。"""
+    from src.services import segments as segment_ops
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.segments = split_text("原文甲。\n原文乙。")
+    segment_ops.propose(state.segments[0], "改写甲。")
+    kept = [dict(seg) for seg in state.segments]
+    state.view_mode, state.full_text_draft = "full", "改写甲。\n\n原文乙。\n\n全文里新加的一段。"
+
+    async def chapter_index():
+        return 1
+
+    monkeypatch.setattr(session, "chapter_index", chapter_index)
+    assert len(session.working_segments()) == 3
+    request = asyncio.run(session.continue_request("paragraph", after=3))
+    assert request.preceding == "改写甲。\n\n原文乙。\n\n全文里新加的一段。" and request.after == 3
+    assert [dict(seg) for seg in state.segments] == kept
+
+
 def test_adopting_refuses_when_target_changed(monkeypatch):
     from src.services.continuation import ContinueRequest
     from src.services.segments import split_text

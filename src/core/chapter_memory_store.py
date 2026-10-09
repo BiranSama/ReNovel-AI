@@ -52,9 +52,11 @@ class ChapterMemoryStore:
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_chapter_memories_project ON chapter_memories (project_id)")
             columns = {row[1] for row in await (await db.execute("PRAGMA table_info(chapter_memories)")).fetchall()}
-            for column in ("notes", "hooks"):
-                if column not in columns:
-                    await db.execute(f"ALTER TABLE chapter_memories ADD COLUMN {column} TEXT")
+            added = [column for column in ("notes", "hooks") if column not in columns]
+            for column in added:
+                await db.execute(f"ALTER TABLE chapter_memories ADD COLUMN {column} TEXT")
+            if added:  # 旧记忆是按旧格式整理的，没有这些内容：清掉指纹，下次「整理记忆」时重新整理
+                await db.execute("UPDATE chapter_memories SET fingerprint = ''")
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS character_overrides (
                     project_id TEXT NOT NULL,
