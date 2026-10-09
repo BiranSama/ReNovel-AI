@@ -192,3 +192,60 @@ def test_same_project_cannot_run_two_batches_at_once(setup):
     assert first.chapters_done == 1 and not first.error
     assert second.error and second.chapters_done == 0
     assert not service.is_running(pid)  # 结束后可以再跑
+
+
+def test_chapter_saved_during_rewrite_keeps_the_manual_edit(setup):
+    """不建副本的批量改写期间，用户（可能在另一个标签页）保存了正在改写的章节：保留手动修改，不被改写结果覆盖。"""
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+
+    class SaveMidway(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            if request.text == "乙一。":
+                await pm.update_chapter_content(ids[1], "手动改过的第二章。")
+            return await super().refine(request)
+
+    outcome = asyncio.run(BatchService(pm, SaveMidway()).run(pid, ids))
+    assert outcome.conflicts == ["第二章 发展"] and outcome.chapters_done == 2 and not outcome.stopped
+    assert chapters(pm, pid)[1] == ("第二章 发展", "手动改过的第二章。")
+    assert chapters(pm, pid)[2] == ("第三章 高潮", "改：丙一。")  # 其余章节照常改写
+    remaining = asyncio.run(BatchService(pm, FakeRefine()).remaining_chapters(pid))
+    assert [c["id"] for c in remaining] == [ids[1]]  # 续跑时重新精修这一章
+
+
+def test_conditional_update_only_writes_unchanged_content(setup):
+    pm, pid = setup
+    first = chapter_ids(pm, pid)[0]
+    assert not asyncio.run(pm.update_chapter_content(first, "新", expected="不是当前内容"))
+    assert asyncio.run(pm.get_chapter_content(first)) == "甲一。\n甲二。"
+    assert asyncio.run(pm.update_chapter_content(first, "新", expected="甲一。\n甲二。"))
+    assert asyncio.run(pm.get_chapter_content(first)) == "新"
+
+
+def test_chapter_memory_is_updated_before_the_next_chapter(setup):
+    """整理过记忆的项目：每章改写保存后先更新它的章节记忆，再改下一章，后面章节的参考资料跟上前面的改动。"""
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+    log = []
+
+    class Refine(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            log.append(("改写", request.text))
+            return await super().refine(request)
+
+    class Store:
+        async def has_any(self, project_id):
+            return True
+
+    class ChapterMemory:
+        async def update(self, project_id, chapter_ids=None):
+            log.append(("记忆", chapter_ids))
+            if ids[0] in chapter_ids:
+                raise LLMError("额度不足")  # 整理失败不中断批量
+            return 1
+
+    outcome = asyncio.run(BatchService(pm, Refine(), chapter_store=Store(), chapter_memory=ChapterMemory())
+                          .run(pid, ids[:2]))
+    assert outcome.chapters_done == 2 and not outcome.error
+    assert log == [("改写", "甲一。"), ("改写", "甲二。"), ("记忆", {ids[0]}),
+                   ("改写", "乙一。"), ("改写", "乙二。"), ("记忆", {ids[1]})]

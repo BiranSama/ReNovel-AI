@@ -3,8 +3,9 @@
 - 勾选“创建副本”时，在副本上改写，原项目保持原样
 - 进度以章为单位：一章全部处理完才保存并记录；中途停止或出错时，
   当前章已改写的部分不保存，下次续跑时从这一章重新开始（避免同一段被精修两次）
+- 改写期间这一章被手动保存过（例如在另一个标签页）：保留手动的修改，不写入改写结果，续跑时重新精修
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from src.llm import LLMError
@@ -49,14 +50,16 @@ class BatchOutcome:
     error: str = ""
     review_errors: int = 0    # 审校调用失败的段数（不影响改写结果）
     review_rejected: int = 0  # 重试到上限仍未通过审校的段数（保留最后一次改写）
+    conflicts: list[str] = field(default_factory=list)  # 改写期间被手动保存过、因此没有写入的章节标题
 
 
 class BatchService:
-    def __init__(self, projects, refine, memory=None, chapter_store=None):
+    def __init__(self, projects, refine, memory=None, chapter_store=None, chapter_memory=None):
         self.projects = projects            # ProjectManager
         self.refine = refine                # RefinePipeline
         self.memory = memory                # RAGEngine，可选
         self.chapter_store = chapter_store  # ChapterMemoryStore，可选
+        self.chapter_memory = chapter_memory  # ChapterMemoryService，可选：每章改写后更新它的章节记忆
         self._running: set[str] = set()     # 正在批量改写的项目（所有标签页共享）
 
     def is_running(self, project_id: str) -> bool:
@@ -106,7 +109,8 @@ class BatchService:
         outcome = BatchOutcome(project_id, 0, len(targets))
 
         for chapter in targets:
-            paragraphs = split_paragraphs(await self.projects.get_chapter_content(chapter["id"]) or "")
+            original = await self.projects.get_chapter_content(chapter["id"]) or ""
+            paragraphs = split_paragraphs(original)
             revised = []
             for done, paragraph in enumerate(paragraphs):
                 if should_stop():
@@ -128,12 +132,24 @@ class BatchService:
                 revised.append(result.text.strip() or paragraph)  # 模型返回空时保留原文
 
             content = join_paragraphs(revised)
-            await self.projects.update_chapter_content(chapter["id"], content)
+            if not await self.projects.update_chapter_content(chapter["id"], content, expected=original):
+                outcome.conflicts.append(chapter["title"])  # 不记进度：续跑时按手动修改后的内容重新精修
+                continue
             if self.memory:
                 await self.memory.aindex_chapter(project_id, chapter["id"], content)
+            await self._update_chapter_memory(project_id, chapter["id"])
             await self.projects.save_progress(project_id, chapter["id"])
             outcome.chapters_done += 1
 
         if on_progress:
             on_progress(BatchProgress("", outcome.chapters_done, len(targets), 0, 0))
         return outcome
+
+    async def _update_chapter_memory(self, project_id: str, chapter_id: str) -> None:
+        """整理过记忆的项目：先按改写后的内容更新这一章的记忆，再改下一章（后面章节的前情、角色状态要跟上）。"""
+        if not (self.chapter_memory and self.chapter_store and await self.chapter_store.has_any(project_id)):
+            return
+        try:
+            await self.chapter_memory.update(project_id, chapter_ids={chapter_id})
+        except LLMError:
+            pass  # 记忆整理失败不中断批量改写：过时的记忆已删除，批量结束后会再整理一次

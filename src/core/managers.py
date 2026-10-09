@@ -53,7 +53,7 @@ class Services:
         self.graph = GraphService(self.llm, self.settings, self.pm)
         self.chapter_memory = ChapterMemoryService(self.llm, self.settings, self.pm, self.chapter_store)
         self.characters = CharacterService(self.pm, self.chapter_store, self.graphs.get)
-        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store)
+        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store, self.chapter_memory)
 
     async def init_db(self):
         """在 app.on_startup 时调用"""
