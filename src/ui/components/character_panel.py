@@ -17,6 +17,7 @@ class CharacterPanel:
             ui.switch('显示已隐藏', on_change=self._toggle_hidden).props('dense size=xs').classes('text-xs show-hidden')
         with ui.scroll_area().classes('flex-grow w-full'):
             self.container = ui.column().classes('w-full gap-1 p-2 character-list')
+        self.dialog = None
         session.character_view = self
 
     async def _toggle_hidden(self, event):
@@ -47,7 +48,12 @@ class CharacterPanel:
         session = self.session
         pid = session.state.current_project_id
         relations = session.services.characters.relations(pid, profile)
-        with ui.dialog() as dialog, ui.card().classes('w-full max-w-2xl character-dialog'):
+        if self.dialog:
+            self.dialog.delete()
+        # 弹窗不放在列表里：后台整理完记忆会重建列表，放在列表里会连同正在编辑的弹窗一起删掉
+        with self.container.client.layout, ui.dialog() as dialog, \
+                ui.card().classes('w-full max-w-2xl character-dialog'):
+            self.dialog = dialog
             ui.label(profile.name).classes('text-lg font-bold')
             aliases = ui.input('别名（逗号分隔；填入其他角色名可合并为同一人）', value='、'.join(profile.aliases)).classes('w-full')
             traits = ui.textarea('性格', value=profile.manual_traits,
