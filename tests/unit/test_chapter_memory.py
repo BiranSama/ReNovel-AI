@@ -126,6 +126,21 @@ def test_invalid_reply_is_retried_next_time(env):
     assert asyncio.run(service(env, llm).update(pid)) == 1 and len(llm.prompts) == 1
 
 
+@pytest.mark.parametrize("failure", [{"replies": ["抱歉"]}, {"fail_after": 0}])
+def test_stale_memory_is_dropped_when_resummarizing_fails(env, failure):
+    """改过的章节重新整理失败（返回无效或调用出错）时，不再保留描述旧内容的记忆。"""
+    pm, _, pid = env
+    asyncio.run(service(env, FakeLLM()).update(pid))
+    first = asyncio.run(pm.get_chapters(pid))[1]["id"]
+    asyncio.run(pm.update_chapter_content(first, BODY + "李四其实是卧底。"))
+    try:
+        asyncio.run(service(env, FakeLLM(**failure)).update(pid))
+    except LLMError:
+        pass
+    assert dict(memories(env))["第一章 相遇"] is None  # 显示为未整理，下次重试
+    assert dict(memories(env))["第二章 拜访"].summary  # 没改的章节不受影响
+
+
 def test_llm_error_keeps_finished_chapters(env):
     with pytest.raises(LLMError):
         asyncio.run(service(env, FakeLLM(fail_after=1)).update(env[2]))
@@ -192,3 +207,25 @@ def test_hooks_are_parsed_and_stored(env):
     _, store, pid = env
     asyncio.run(store.save(pid, memory))
     assert asyncio.run(store.for_project(pid))["c1"].hooks == ["李四欲言又止"]
+
+
+def test_memories_from_before_hooks_existed_are_summarized_again(tmp_path):
+    """旧版本整理的记忆没有伏笔等内容：升级后清掉指纹，下次整理时重新整理，续写才能用上伏笔。"""
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE chapter_memories (chapter_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+                "fingerprint TEXT, summary TEXT, characters TEXT, events TEXT, updated_at TEXT)")
+    con.execute("INSERT INTO chapter_memories VALUES ('c1', 'p1', 'old', '摘要', '[]', '[]', '')")
+    con.commit()
+    con.close()
+
+    store = ChapterMemoryStore(str(db))
+    asyncio.run(store.init_db())
+    memory = asyncio.run(store.for_project("p1"))["c1"]
+    assert memory.summary == "摘要" and memory.fingerprint == ""  # 内容保留，下次整理时重新整理
+
+    asyncio.run(store.save("p1", ChapterMemory("c1", "新摘要", [], [], "new", hooks=["密信"])))
+    asyncio.run(store.init_db())  # 已经升级过：再启动不会再清
+    assert asyncio.run(store.for_project("p1"))["c1"].fingerprint == "new"

@@ -11,7 +11,7 @@ from src.core.chapter_memory_store import ChapterMemory, ChapterMemoryStore, Cha
 from src.core.project_manager import ProjectManager
 from src.core.settings import AppSettings
 from src.core.style_store import StyleProfile, StyleStore
-from src.services.context import ContextBuilder
+from src.services.context import QUERY_CHARS, ContextBuilder
 from src.services.continuation import ContinuationService, ContinueRequest
 from src.services.refine import RefinePipeline
 
@@ -122,9 +122,15 @@ def test_reviewer_checks_continuation_and_rejection_feeds_back(env):
     assert "冲突：第二章已拜师，此处却说没有师父" in llm.prompts["writer"][1]
 
 
+def tail_request(pm, pid, **kwargs):
+    """接着全书最后一章续写新章节的请求（与界面生成时一致）。"""
+    chapters = asyncio.run(pm.get_chapters(pid))
+    return ContinueRequest(pid, len(chapters) + 1, asyncio.run(pm.get_chapter_content(chapters[-1]["id"])), **kwargs)
+
+
 def test_adopting_a_new_chapter_appends_and_indexes(env):
     pid, pm, rag, _, service = env
-    cid = asyncio.run(service.adopt_chapter(pid, "第四章 远行", "张三背起行囊，离开了长安城。"))
+    cid = asyncio.run(service.adopt_chapter(tail_request(pm, pid), "第四章 远行", "张三背起行囊，离开了长安城。"))
     chapters = asyncio.run(pm.get_chapters(pid))
     assert chapters[-1]["id"] == cid and chapters[-1]["title"] == "第四章 远行"
     assert chapters[-1]["order_index"] == chapters[-2]["order_index"] + 1
@@ -157,3 +163,37 @@ def test_concurrent_appends_get_distinct_positions(env):
     asyncio.run(both())
     orders = [c["order_index"] for c in asyncio.run(pm.get_chapters(pid))]
     assert len(orders) == len(set(orders)) == 5
+
+
+@pytest.mark.parametrize("change", ["append", "edit_last"])
+def test_new_chapter_is_not_adopted_after_the_book_tail_changed(env, change):
+    """生成新章节草稿后，别的标签页又追加了一章或改了最后一章：草稿接不上了，不能追加到末尾。"""
+    pid, pm, _, _, service = env
+    request = tail_request(pm, pid)
+    if change == "append":
+        asyncio.run(pm.add_chapter(pid, "第四章 抢先", "另一个标签页先续写的一章。"))
+    else:
+        last = asyncio.run(pm.get_chapters(pid))[-1]["id"]
+        asyncio.run(pm.update_chapter_content(last, "改过的最后一章。"))
+    before = len(asyncio.run(pm.get_chapters(pid)))
+    with pytest.raises(ValueError, match="全书末尾有改动"):
+        asyncio.run(service.adopt_chapter(request, "第四章 远行", "张三离开了长安城。"))
+    assert len(asyncio.run(pm.get_chapters(pid))) == before
+
+
+def test_outline_and_draft_are_inside_the_retrieval_window(env, monkeypatch):
+    """向量检索只看查询的开头一段：前文很长时，大纲（Writer）和续写内容（Reviewer）也要在这一段里。"""
+    pid, pm, rag, llm, service = env
+    queries = []
+    search = rag.asearch
+
+    async def spy(query, project_id, n_results=5, chapter_ids=None):
+        queries.append(query)
+        return await search(query, project_id, n_results, chapter_ids)
+
+    monkeypatch.setattr(rag, "asearch", spy)
+    preceding = "前文铺垫。" * 200 + "张三推开了门。"
+    asyncio.run(service.continue_text(ContinueRequest(pid, 4, preceding, outline="王五前来送别")))
+    writer, reviewer = queries[0], queries[-1]
+    assert writer.startswith("王五前来送别") and writer.endswith("张三推开了门。") and len(writer) <= QUERY_CHARS
+    assert reviewer.startswith("续写的正文。")

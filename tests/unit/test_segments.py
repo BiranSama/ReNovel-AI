@@ -66,3 +66,21 @@ def test_saving_keeps_previous_versions(tmp_path):
     first, later = asyncio.run(run())
     assert [v["content"] for v in first] == ["第二版。", "原文。"]  # 最新的在前
     assert len(later) == MAX_VERSIONS and later[0]["content"] == f"第{MAX_VERSIONS + 7}版。"
+
+
+def test_concurrent_saves_keep_every_replaced_version(tmp_path):
+    """两个标签页同时保存同一章：依次写入，先保存的那一版也留在历史里（不会两次都记下最初的内容）。"""
+    pm = ProjectManager()
+    pm.db_path = str(tmp_path / "t.db")
+
+    async def run():
+        await pm.init_db()
+        pid = await pm.create_project("书")
+        await pm.import_content(pid, "第一章 开端\n原文。\n")
+        cid = (await pm.get_chapters(pid))[0]["id"]
+        await asyncio.gather(pm.update_chapter_content(cid, "甲版。"), pm.update_chapter_content(cid, "乙版。"))
+        return await pm.get_chapter_content(cid), [v["content"] for v in await pm.get_chapter_versions(cid)]
+
+    final, versions = asyncio.run(run())
+    first = "乙版。" if final == "甲版。" else "甲版。"
+    assert versions == [first, "原文。"]

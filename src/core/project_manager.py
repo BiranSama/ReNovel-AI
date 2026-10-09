@@ -2,6 +2,7 @@ import aiosqlite
 import uuid
 import json
 from datetime import datetime
+from typing import Optional
 
 from src import paths
 from src.services.importer import split_chapters
@@ -106,12 +107,25 @@ class ProjectManager:
         projects = await self.get_projects()
         return [p for p in projects if json.loads(p.get('world_settings') or '{}').get('backup_of') == project_id]
 
-    async def add_chapter(self, project_id: str, title: str, content: str) -> str:
-        """在全书末尾新增一章，返回章节 id。"""
+    async def add_chapter(self, project_id: str, title: str, content: str,
+                          expected_tail: Optional[tuple[int, str]] = None) -> Optional[str]:
+        """在全书末尾新增一章，返回章节 id。
+
+        给出 expected_tail（现有章节数, 最后一章正文）时，全书末尾已经变了（新增了章节或改了最后一章）就不追加，返回 None。
+        """
         chapter_id = str(uuid.uuid4())
         async with aiosqlite.connect(self.db_path) as db:
             # 独占事务：多个标签页同时追加章节时依次分配位置，不会得到相同的 order_index
             await db.execute("BEGIN IMMEDIATE")
+            if expected_tail is not None:
+                cursor = await db.execute("SELECT COUNT(*) FROM chapters WHERE project_id = ?", (project_id,))
+                count = (await cursor.fetchone())[0]
+                cursor = await db.execute("SELECT content FROM chapters WHERE project_id = ? "
+                                          "ORDER BY order_index DESC LIMIT 1", (project_id,))
+                row = await cursor.fetchone()
+                if (count, (row[0] or "") if row else "") != tuple(expected_tail):
+                    await db.rollback()
+                    return None
             cursor = await db.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM chapters WHERE project_id = ?",
                                       (project_id,))
             order_index = (await cursor.fetchone())[0]
@@ -132,19 +146,29 @@ class ProjectManager:
             row = await cursor.fetchone()
             return (row[0] or "") if row else None  # 章节不存在返回 None；空章节返回 ""
 
-    async def update_chapter_content(self, chapter_id: str, new_content: str):
-        """保存章节；内容有变化时把旧内容留作历史版本（每章保留最近 MAX_VERSIONS 个），可以恢复。"""
+    async def update_chapter_content(self, chapter_id: str, new_content: str, expected: Optional[str] = None) -> bool:
+        """保存章节；内容有变化时把旧内容留作历史版本（每章保留最近 MAX_VERSIONS 个），可以恢复。
+
+        给出 expected 时只在当前内容仍是它时写入（期间被别处保存过就不覆盖），返回是否写入。
+        """
         async with aiosqlite.connect(self.db_path) as db:
+            # 先拿写锁再读旧内容：两个标签页同时保存时依次进行，每个被替换掉的版本都能留进历史
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute("SELECT content FROM chapters WHERE id = ?", (chapter_id,))
             row = await cursor.fetchone()
-            if row and (row[0] or "") != new_content and (row[0] or "").strip():
+            old = (row[0] or "") if row else ""
+            if expected is not None and old != expected:
+                await db.rollback()
+                return False
+            if old != new_content and old.strip():
                 await db.execute("INSERT INTO chapter_versions (chapter_id, content, created_at) VALUES (?, ?, ?)",
-                                 (chapter_id, row[0], datetime.now().isoformat(timespec="seconds")))
+                                 (chapter_id, old, datetime.now().isoformat(timespec="seconds")))
                 await db.execute("DELETE FROM chapter_versions WHERE chapter_id = ? AND id NOT IN "
                                  "(SELECT id FROM chapter_versions WHERE chapter_id = ? ORDER BY id DESC LIMIT ?)",
                                  (chapter_id, chapter_id, MAX_VERSIONS))
             await db.execute("UPDATE chapters SET content = ? WHERE id = ?", (new_content, chapter_id))
             await db.commit()
+        return True
 
     async def get_chapter_versions(self, chapter_id: str) -> list[dict]:
         """章节的历史版本，最新的在前。"""

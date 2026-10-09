@@ -109,6 +109,28 @@ def test_adopting_paragraphs_in_full_text_mode_keeps_them(monkeypatch):
     assert session.services.pm.saved["c1"] == "甲。\n\n续一。\n\n续二。\n\n乙。"
 
 
+def test_preparing_a_continuation_does_not_touch_paragraph_history(monkeypatch):
+    """全文工作台里打开续写、生成草稿：续写位置按全文草稿计算，但不改动各段的原文、候选与撤销历史。"""
+    from src.services import segments as segment_ops
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.segments = split_text("原文甲。\n原文乙。")
+    segment_ops.propose(state.segments[0], "改写甲。")
+    kept = [dict(seg) for seg in state.segments]
+    state.view_mode, state.full_text_draft = "full", "改写甲。\n\n原文乙。\n\n全文里新加的一段。"
+
+    async def chapter_index():
+        return 1
+
+    monkeypatch.setattr(session, "chapter_index", chapter_index)
+    assert len(session.working_segments()) == 3
+    request = asyncio.run(session.continue_request("paragraph", after=3))
+    assert request.preceding == "改写甲。\n\n原文乙。\n\n全文里新加的一段。" and request.after == 3
+    assert [dict(seg) for seg in state.segments] == kept
+
+
 def test_adopting_refuses_when_target_changed(monkeypatch):
     from src.services.continuation import ContinueRequest
     from src.services.segments import split_text
@@ -137,3 +159,26 @@ def test_graph_updates_are_queued_across_projects():
     session = Session(services)
     asyncio.run(session.bg_build_graph("A"))
     assert calls == [("A", None), ("B", {"b1"})] and session.state.graph_pending == {}
+
+
+def test_memory_update_does_not_redraw_the_style_panel():
+    """整理完当前项目的记忆只刷新记忆和角色面板：文风面板里正在编辑、还没保存的内容不能被重绘掉。"""
+    class Memory:
+        async def update(self, project_id, on_progress=None, chapter_ids=None):
+            return 1
+
+    session = Session(SimpleNamespace(chapter_memory=Memory()))
+    session.state.current_project_id = "P"
+    refreshed = []
+
+    def view(name):
+        async def refresh():
+            refreshed.append(name)
+        return SimpleNamespace(refresh=refresh)
+
+    session.memory_view, session.character_view, session.style_view = view("记忆"), view("角色"), view("文风")
+    asyncio.run(session.bg_update_memory("P"))
+    assert refreshed == ["记忆", "角色"]
+
+    asyncio.run(session.refresh_memory_ui(include_style=True))  # 切换项目时
+    assert refreshed[2:] == ["记忆", "角色", "文风"]

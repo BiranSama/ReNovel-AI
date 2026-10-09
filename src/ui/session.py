@@ -143,9 +143,12 @@ class Session:
     # ==========================
     # 2b. 章节记忆
     # ==========================
-    async def refresh_memory_ui(self):
-        """刷新章节记忆、角色档案和文风面板（切换项目、整理记忆后）。"""
-        for view in (self.memory_view, self.character_view, self.style_view):
+    async def refresh_memory_ui(self, include_style=False):
+        """刷新章节记忆和角色档案面板（整理记忆后）；切换项目时 include_style，连文风面板一起刷新。
+
+        整理完记忆不刷新文风面板：重绘会丢掉正在编辑、还没保存的文风。
+        """
+        for view in (self.memory_view, self.character_view, self.style_view if include_style else None):
             if not view: continue
             try: await view.refresh()
             except RuntimeError: pass  # 页面已关闭
@@ -230,7 +233,7 @@ class Session:
             except RuntimeError: pass
 
         self.refresh_graph_ui()
-        await self.refresh_memory_ui()
+        await self.refresh_memory_ui(include_style=True)
         chs = await self.services.pm.get_chapters(pid)
         if chs: await self.load_chapter(chs[0]['id'])
         else: await self.refresh_chapter_list()
@@ -418,10 +421,11 @@ class Session:
     # ==========================
     # 续写
     # ==========================
-    def sync_segments_from_draft(self):
-        """全文工作台里编辑的是全文草稿：按草稿重新分段，让续写位置与草稿一致。"""
+    def working_segments(self):
+        """续写位置按用户正在编辑的内容计算：全文工作台里是全文草稿，按草稿临时分段（不改动各段的原文和候选）。"""
         if self.state.view_mode == 'full':
-            self.state.segments = split_text(self.state.full_text_draft or "")
+            return split_text(self.state.full_text_draft or "")
+        return self.state.segments
 
     async def continue_request(self, mode, after=0, outline="", length=800, title=""):
         """mode 为 chapter：在全书末尾续写新章节；paragraph：在当前章节第 after 段（从 1 开始）之后续写。"""
@@ -431,10 +435,10 @@ class Session:
             last = await pm.get_chapter_content(chapters[-1]['id']) if chapters else ""
             return ContinueRequest(state.current_project_id, len(chapters) + 1, last or "", outline=outline,
                                    target_chars=length, title=title, persona=state.active_system_prompt or "")
-        self.sync_segments_from_draft()
-        after = max(0, min(int(after or 0), len(state.segments)))
+        current = self.working_segments()
+        after = max(0, min(int(after or 0), len(current)))
         return ContinueRequest(state.current_project_id, await self.chapter_index(),
-                               segments.merge(state.segments[:after]), segments.merge(state.segments[after:]),
+                               segments.merge(current[:after]), segments.merge(current[after:]),
                                outline=outline, target_chars=length, persona=state.active_system_prompt or "",
                                mode='paragraph', chapter_id=state.current_chapter_id, after=after)
 
@@ -445,16 +449,17 @@ class Session:
         """
         state, pid = self.state, request.project_id
         if request.mode == 'chapter':
-            cid = await self.services.continuation.adopt_chapter(pid, title or request.title, draft)
+            cid = await self.services.continuation.adopt_chapter(request, title or request.title, draft)
             if state.current_project_id == pid:
                 await self.load_chapter(cid)
         else:
             cid = request.chapter_id
             if state.current_project_id != pid or state.current_chapter_id != cid:
                 raise ValueError('当前打开的不是生成草稿时的章节，请回到那一章或重新生成')
-            self.sync_segments_from_draft()
-            if segments.merge(state.segments[:request.after]) != request.preceding:
+            current = self.working_segments()
+            if segments.merge(current[:request.after]) != request.preceding:
                 raise ValueError('生成草稿后，续写位置之前的正文有改动，请重新生成')
+            state.segments = current  # 全文工作台：保存时本来就以草稿为准重新分段
             # 插入为“空原文 + 已采纳的候选”：保存时写入，点撤销即可去掉这一段
             lines = [seg['original'] for seg in split_text(draft)]
             state.segments[request.after:request.after] = [segments.new_segment("", line) for line in lines]
@@ -505,6 +510,9 @@ class Session:
             ui.notify(f'{outcome.review_errors} 段审校未完成，已保留改写结果', type='warning')
         if outcome.review_rejected:
             ui.notify(f'{outcome.review_rejected} 段重试后仍未通过审校，已保留最后一次改写', type='warning')
+        if outcome.conflicts:
+            ui.notify(f'{"、".join(outcome.conflicts)} 在改写期间被手动保存过，已保留手动的修改；'
+                      '可用“继续上次进度”重新精修', type='warning', multi_line=True)
         self.update_status(f'批量：{summary}', 1.0)
         if outcome.chapters_done:  # 改写过的章节：已整理过记忆 / 建立了图谱的项目随之更新（内容没变的章节不会调用模型）
             if await self.services.chapter_store.has_any(pid):
