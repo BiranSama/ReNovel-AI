@@ -14,6 +14,12 @@ import urllib.request
 from pathlib import Path
 
 
+# 英文 Windows 的控制台是 cp1252，打印中文会抛 UnicodeEncodeError：不支持的字符替换为问号
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -27,12 +33,15 @@ def main() -> int:
     args = parser.parse_args()
 
     port = free_port()
-    data = Path(tempfile.mkdtemp(prefix="renovel-selftest-")) / "data"
-    log = data.parent / "app.log"
+    root = Path(tempfile.mkdtemp(prefix="renovel-selftest-"))
+    data = root / "data"
+    log = root / "app.log"
     env = dict(os.environ, RENOVEL_PORT=str(port), RENOVEL_SHOW="0", RENOVEL_DATA_DIR=str(data),
                PYTHONIOENCODING="utf-8")
     url = f"http://127.0.0.1:{port}/"
-    check = subprocess.run([args.program, "--self-check"], env=env, capture_output=True, timeout=args.timeout)
+    # --self-check 用单独的数据目录：它会创建数据库，不能让正常启动时的数据库检查被它提前满足
+    check_env = dict(env, RENOVEL_DATA_DIR=str(root / "self-check-data"))
+    check = subprocess.run([args.program, "--self-check"], env=check_env, capture_output=True, timeout=args.timeout)
     output = (check.stdout + check.stderr).decode("utf-8", "replace")
     print(output.strip())
     if check.returncode != 0 or "self-check ok" not in output:

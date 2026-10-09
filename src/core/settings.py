@@ -57,12 +57,12 @@ DEFAULT_BLOCKS = {
 }
 
 DEFAULT_FULL_CONFIG = {
-    'writer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['writer']},
-    'reviewer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['reviewer']},
+    'writer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['writer']},
+    'reviewer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['reviewer']},
     'analyzer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o', 'temperature': 0.5, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['analyzer']},
-    'chat': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['chat']},
+    'chat': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['chat']},
     'memory': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'temperature': 0.2, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['memory']},
-    'graph': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.1, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['graph']},
+    'graph': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'temperature': 0.1, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['graph']},
     'enable_reviewer': False,
     'review_threshold': 8,
     'review_mode': 'manual',     # manual：未通过时弹窗询问；auto：自动按审校意见重试

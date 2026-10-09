@@ -22,6 +22,8 @@ jobs:
       - name: 打包
         run: nicegui-pack --onedir --noconfirm --name ReNovel main.py
       - name: 启动自检
+        env:
+          PYTHONUTF8: "1"  # 自检脚本的输出含中文，runner 控制台默认是 cp1252
         run: python scripts/self_test.py dist/ReNovel/ReNovel.exe
       - name: 附带说明
         shell: pwsh
