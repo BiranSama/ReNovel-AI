@@ -19,7 +19,8 @@ MAX_KNOWN_CHARACTERS = 60
 INSTRUCTION = ('请整理这一章的记忆，只输出 JSON：{"summary": "150 字以内的情节摘要", '
                '"characters": ["出场角色，沿用已知角色的名字"], "events": ["关键事件：谁做了什么、结果如何，3 到 6 条"], '
                '"character_notes": [{"name": "角色名", "aliases": ["本章出现的其他称呼"], '
-               '"traits": "本章体现的性格，没有则留空", "status": "本章结束时的状态变化（如受伤、离开、身份暴露），没有则留空"}]}')
+               '"traits": "本章体现的性格，没有则留空", "status": "本章结束时的状态变化（如受伤、离开、身份暴露），没有则留空"}], '
+               '"hooks": ["本章埋下、尚未揭晓的悬念或伏笔，没有则为空列表"]}')
 
 
 class MemoryParseError(ValueError):
@@ -45,7 +46,7 @@ def parse_memory(chapter_id: str, raw: str) -> ChapterMemory:
         notes.append(CharacterNote(name, [str(a).strip() for a in aliases if str(a).strip() and str(a).strip() != name],
                                    str(item.get("traits") or "").strip(), str(item.get("status") or "").strip()))
     return ChapterMemory(chapter_id, data.get("summary", "").strip(), strings("characters"), strings("events"),
-                         notes=notes)
+                         notes=notes, hooks=strings("hooks"))
 
 
 class ChapterMemoryService:

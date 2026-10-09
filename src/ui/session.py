@@ -10,6 +10,7 @@ from nicegui import ui
 
 from src.llm import LLMError
 from src.services.batch import BACKUP_SUFFIX, DEFAULT_INSTRUCTION
+from src.services.continuation import ContinueRequest
 from src.services.importer import UnsupportedEncoding, decode_text
 from src.services import segments
 from src.services.refine import RefineRequest
@@ -108,20 +109,30 @@ class Session:
             self.graph_view.show(self.graph_engine)
 
     async def bg_build_graph(self, pid, chapter_ids=None):
-        """后台更新图谱：只分析内容有变化的章节（可限定章节）。在后台任务中运行，进度显示在状态栏。"""
-        engine = self.services.graphs.get(pid)
-        if not engine or self.state.graph_task_running: return
-        self.state.graph_task_running = True
-        self.update_status("图谱更新中...", 0.0)
+        """后台更新图谱：只分析内容有变化的章节（可限定章节），进度显示在状态栏。
+        已有任务在跑时，把这些章节排到它后面（与章节记忆一样，所有项目的待办都会处理）。"""
+        state = self.state
+        if not self.services.graphs.get(pid): return
+        pending = state.graph_pending.setdefault(pid, set())
+        if chapter_ids is None: pending.add(None)  # None 表示全部章节
+        else: pending.update(chapter_ids)
+        if state.graph_task_running: return
+        state.graph_task_running = True
         try:
-            added = await self.services.graph.update(
-                engine, pid, on_progress=lambda m, p: (self.update_status(m, p), self.refresh_graph_ui()),
-                chapter_ids=chapter_ids)
-            self.update_status(f"图谱已更新：新增 {added} 条关系", 1.0)
-        except LLMError as e:
-            self.update_status(f"图谱更新失败：{e}", 1.0)
+            while state.graph_pending:
+                project = next(iter(state.graph_pending))
+                wanted = state.graph_pending.pop(project)
+                engine = self.services.graphs.get(project)
+                self.update_status("图谱更新中...", 0.0)
+                try:
+                    added = await self.services.graph.update(
+                        engine, project, on_progress=lambda m, p: (self.update_status(m, p), self.refresh_graph_ui()),
+                        chapter_ids=None if None in wanted else wanted)
+                    self.update_status(f"图谱已更新：新增 {added} 条关系", 1.0)
+                except LLMError as e:
+                    self.update_status(f"图谱更新失败：{e}", 1.0)
         finally:
-            self.state.graph_task_running = False
+            state.graph_task_running = False
         self.refresh_graph_ui()
 
     async def update_graph_incrementally(self):
@@ -251,15 +262,19 @@ class Session:
         if self.state.view_mode == 'full':
             self.state.segments = split_text(self.state.full_text_draft or "")
             self._render()
+        await self._save_segments()
 
+    async def _save_segments(self) -> bool:
+        """保存当前各段生效的文字，返回是否保存了。"""
         txt = self.merge_text()
         pid, cid = self.state.current_project_id, self.state.current_chapter_id
         if cid:
             # 只在数据库里还是打开时的内容时写入：这期间另一个标签页或批量改写保存过这一章，先问是否覆盖
             if not await self.services.pm.update_chapter_content(cid, txt, expected=self.state.saved_text):
                 if not await self._confirm_overwrite():
-                    return ui.notify('未保存。重新打开这一章可以看到别处保存的内容（当前的修改请先复制出来）',
-                                     type='warning', multi_line=True)
+                    ui.notify('未保存。重新打开这一章可以看到别处保存的内容（当前的修改请先复制出来）',
+                              type='warning', multi_line=True)
+                    return False
                 await self.services.pm.update_chapter_content(cid, txt)
             if self.state.current_chapter_id == cid:
                 self.state.saved_text = txt
@@ -273,6 +288,14 @@ class Session:
                 if engine and engine.is_built():
                     asyncio.create_task(self.bg_build_graph(pid, {cid}))
             ui.notify('✅ 已保存（记忆已更新）')
+        return bool(cid)
+
+    def has_unsaved_changes(self) -> bool:
+        """编辑器里的内容和打开（或上次保存）这一章时数据库里的正文不一样（忽略段落格式的差别）。"""
+        state = self.state
+        if not state.current_chapter_id or state.saved_text is None:
+            return False
+        return segments.merge(self.working_segments()) != segments.merge(split_text(state.saved_text))
 
     async def chapter_versions(self):
         if not self.state.current_chapter_id: return []
@@ -397,6 +420,15 @@ class Session:
 
     async def refine(self, request, on_text, ask=None):
         """走统一精修流程；结束后对审校失败或最终未通过给出提示（用户已在弹窗里看过的除外）。"""
+        return await self._reviewed(
+            lambda on_reject: self.services.refine.refine(request, on_text=on_text, on_reject=on_reject), ask)
+
+    async def continue_text(self, request, on_text, ask=None):
+        """生成续写草稿（不保存），审校策略与改写相同。"""
+        return await self._reviewed(
+            lambda on_reject: self.services.continuation.continue_text(request, on_text, on_reject), ask)
+
+    async def _reviewed(self, run, ask):
         asked = []
         on_reject = None
         if ask:
@@ -404,7 +436,7 @@ class Session:
                 asked.append(review)
                 return await ask(review, text, can_retry)
 
-        result = await self.services.refine.refine(request, on_text=on_text, on_reject=on_reject)
+        result = await run(on_reject)
         self.notify_review(result.review, asked)
         return result
 
@@ -416,6 +448,67 @@ class Session:
         elif not review.passed and review not in asked:
             ui.notify(f'重试 {self.services.settings.get_max_review_retries()} 次后仍未通过审校（{review.score:g} 分），'
                       f'已保留最后一次改写：{review.feedback}', type='warning', multi_line=True)
+
+    # ==========================
+    # 续写
+    # ==========================
+    def working_segments(self):
+        """续写位置按用户正在编辑的内容计算：全文工作台里是全文草稿，按草稿临时分段（不改动各段的原文和候选）。"""
+        if self.state.view_mode == 'full':
+            return split_text(self.state.full_text_draft or "")
+        return self.state.segments
+
+    async def continue_request(self, mode, after=0, outline="", length=800, title=""):
+        """mode 为 chapter：在全书末尾续写新章节；paragraph：在当前章节第 after 段（从 1 开始）之后续写。"""
+        state, pm = self.state, self.services.pm
+        if mode == 'chapter':
+            chapters = await pm.get_chapters(state.current_project_id)
+            last = await pm.get_chapter_content(chapters[-1]['id']) if chapters else ""
+            return ContinueRequest(state.current_project_id, len(chapters) + 1, last or "", outline=outline,
+                                   target_chars=length, title=title, persona=state.active_system_prompt or "")
+        current = self.working_segments()
+        after = max(0, min(int(after or 0), len(current)))
+        return ContinueRequest(state.current_project_id, await self.chapter_index(),
+                               segments.merge(current[:after]), segments.merge(current[after:]),
+                               outline=outline, target_chars=length, persona=state.active_system_prompt or "",
+                               mode='paragraph', chapter_id=state.current_chapter_id, after=after)
+
+    async def adopt_continuation(self, request, draft, title=""):
+        """采纳续写草稿，写到生成时确定的位置，并进入记忆（向量记忆、章节记忆；已建图谱的项目也更新图谱）。
+
+        段后续写时，如果当前打开的不是那一章，或续写位置之前的正文在生成后被改动，拒绝采纳并抛出 ValueError。
+        """
+        state, pid = self.state, request.project_id
+        if request.mode == 'chapter':
+            cid = await self.services.continuation.adopt_chapter(request, title or request.title, draft)
+            if state.current_project_id == pid:
+                if self.has_unsaved_changes():  # 不切到新章节：会丢掉当前章节没保存的修改
+                    ui.notify('新章节已追加到全书末尾。当前章节有未保存的修改，保存后再到左侧打开新章节',
+                              type='warning', multi_line=True)
+                else:
+                    await self.load_chapter(cid)
+        else:
+            cid = request.chapter_id
+            if state.current_project_id != pid or state.current_chapter_id != cid:
+                raise ValueError('当前打开的不是生成草稿时的章节，请回到那一章或重新生成')
+            current = self.working_segments()
+            if (segments.merge(current[:request.after]), segments.merge(current[request.after:])) != \
+                    (request.preceding, request.following):
+                raise ValueError('生成草稿后，续写位置前后的正文有改动，请重新生成')
+            state.segments = current  # 全文工作台：保存时本来就以草稿为准重新分段
+            # 插入为“空原文 + 已采纳的候选”：保存时写入，点撤销即可去掉这一段
+            lines = [seg['original'] for seg in split_text(draft)]
+            state.segments[request.after:request.after] = [segments.new_segment("", line) for line in lines]
+            state.full_text_draft = segments.merge(state.segments)  # 全文工作台里显示的草稿同步
+            self._render()
+            # 直接保存准备好的段落，不再按全文重新分段：插入的段落保留「候选」身份，回到分段模式也能撤销
+            if not await self._save_segments():
+                return None  # 别处保存过这一章、用户选择不覆盖：续写已放进编辑器，没有保存
+        asyncio.create_task(self.bg_update_memory(pid, {cid}))
+        engine = self.services.graphs.get(pid)
+        if engine and engine.is_built():
+            asyncio.create_task(self.bg_build_graph(pid, {cid}))
+        return cid
 
     # ==========================
     # Batch Task

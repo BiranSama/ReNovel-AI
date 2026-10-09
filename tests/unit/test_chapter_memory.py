@@ -199,3 +199,33 @@ def test_concurrent_updates_do_not_summarize_twice(env):
 
     asyncio.run(both())
     assert len(llm.prompts) == 2  # 两章正文各一次
+
+
+def test_hooks_are_parsed_and_stored(env):
+    memory = parse_memory("c1", '{"summary": "摘要", "hooks": ["李四欲言又止", " "], "characters": []}')
+    assert memory.hooks == ["李四欲言又止"]
+    _, store, pid = env
+    asyncio.run(store.save(pid, memory))
+    assert asyncio.run(store.for_project(pid))["c1"].hooks == ["李四欲言又止"]
+
+
+def test_memories_from_before_hooks_existed_are_summarized_again(tmp_path):
+    """旧版本整理的记忆没有伏笔等内容：升级后清掉指纹，下次整理时重新整理，续写才能用上伏笔。"""
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE chapter_memories (chapter_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+                "fingerprint TEXT, summary TEXT, characters TEXT, events TEXT, updated_at TEXT)")
+    con.execute("INSERT INTO chapter_memories VALUES ('c1', 'p1', 'old', '摘要', '[]', '[]', '')")
+    con.commit()
+    con.close()
+
+    store = ChapterMemoryStore(str(db))
+    asyncio.run(store.init_db())
+    memory = asyncio.run(store.for_project("p1"))["c1"]
+    assert memory.summary == "摘要" and memory.fingerprint == ""  # 内容保留，下次整理时重新整理
+
+    asyncio.run(store.save("p1", ChapterMemory("c1", "新摘要", [], [], "new", hooks=["密信"])))
+    asyncio.run(store.init_db())  # 已经升级过：再启动不会再清
+    assert asyncio.run(store.for_project("p1"))["c1"].fingerprint == "new"
