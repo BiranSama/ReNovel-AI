@@ -9,7 +9,7 @@ from src.core.settings import AppSettings
 from src.core.style_store import StyleProfile, StyleStore
 from src.services.context import ContextBuilder
 from src.services.refine import RefinePipeline, RefineRequest
-from src.services.style import PRESET_NAMES, StyleExtractError, StyleService, pick_candidates
+from src.services.style import MAX_PARAGRAPH_CHARS, PRESET_NAMES, StyleExtractError, StyleService, pick_candidates
 
 PARAGRAPH = "他把烟按灭在窗台上，转身去倒水。水壶是空的。他站了一会儿，又把烟盒拿起来，看了看窗外的雨。"
 
@@ -100,6 +100,60 @@ def test_non_string_description_is_rejected(env, description):
     with pytest.raises(StyleExtractError, match="有效的风格描述"):
         asyncio.run(StyleService(FakeLLM(reply=reply), AppSettings(Config()), pm, store).extract(pid))
     assert asyncio.run(store.get(pid)) is None
+
+
+def test_long_paragraphs_are_trimmed_instead_of_dropped(env):
+    """有的 TXT 一章只有一行：过长的段落截到句末再用，不会因此报「正文太少」。"""
+    pm, store, _ = env
+
+    async def one_line_book():
+        pid = await pm.create_project("一行一章")
+        line = "".join(f"第{i}句写得很长很长，节奏很慢。" for i in range(80))
+        await pm.import_content(pid, f"第一章 开端\n{line}\n第二章 结尾\n{line}\n")
+        return pid
+
+    pid = asyncio.run(one_line_book())
+    candidates = pick_candidates([asyncio.run(pm.get_chapter_content(c["id"]))
+                                  for c in asyncio.run(pm.get_chapters(pid))])
+    assert len(candidates) == 2 and all(len(c) <= MAX_PARAGRAPH_CHARS and c.endswith("。") for c in candidates)
+    profile = asyncio.run(StyleService(FakeLLM(reply='{"description": "慢。", "samples": [1]}'),
+                                       AppSettings(Config()), pm, store).extract(pid))
+    assert profile.description == "慢。"
+
+
+def test_extraction_does_not_overwrite_a_profile_changed_meanwhile(env):
+    """提炼要等模型：期间套用了预设或手动保存，以后来的操作为准，提炼结果不覆盖。"""
+    pm, store, pid = env
+    service = StyleService(None, AppSettings(Config()), pm, store)
+
+    class SlowLLM(FakeLLM):
+        async def complete(self, config, messages):
+            await service.apply_preset(pid, "古风")  # 等模型时用户套用了预设
+            return await super().complete(config, messages)
+
+    service.llm = SlowLLM()
+    with pytest.raises(StyleExtractError, match="被修改过"):
+        asyncio.run(service.extract(pid))
+    assert asyncio.run(store.get(pid)).source == "预设：古风"
+
+
+def test_style_panel_ignores_a_refresh_for_a_project_no_longer_open():
+    """很快地连续切换项目：前一个项目的档案读得慢、后到时，不能显示在当前项目的面板里。"""
+    from types import SimpleNamespace
+
+    from src.ui.components.style_panel import StylePanel
+
+    state = SimpleNamespace(current_project_id="A")
+
+    async def get(project_id):
+        state.current_project_id = "B"  # 读取 A 的档案期间切到了 B
+        return StyleProfile("A 的文风")
+
+    panel = SimpleNamespace(session=SimpleNamespace(state=state, services=SimpleNamespace(style=SimpleNamespace(get=get))),
+                            profile=None, rendered=[])
+    panel._render = lambda: panel.rendered.append(panel.profile)
+    asyncio.run(StylePanel.refresh(panel))
+    assert panel.profile is None and panel.rendered == []
 
 
 def test_presets_can_be_applied(env):
