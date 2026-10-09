@@ -197,3 +197,18 @@ def test_outline_and_draft_are_inside_the_retrieval_window(env, monkeypatch):
     writer, reviewer = queries[0], queries[-1]
     assert writer.startswith("王五前来送别") and writer.endswith("张三推开了门。") and len(writer) <= QUERY_CHARS
     assert reviewer.startswith("续写的正文。")
+
+
+def test_characters_late_in_a_long_draft_are_checked_by_the_reviewer(env):
+    """800 字、2000 字的续写里，后半段才出场的角色也要对照档案。"""
+    pid, pm, _, llm, service = env
+    asyncio.run(service.chapter_store.save_override(pid, CharacterOverride("赵六", notes="王五的仇人")))
+
+    async def stream(config, messages):
+        llm.prompts.setdefault(config["model"], []).append(messages[-1]["content"])
+        yield "张三在长安城里走了很久。" * 60 + "赵六突然出现在门口。"
+
+    llm.stream = stream
+    asyncio.run(service.continue_text(ContinueRequest(pid, 4, "张三收拾行囊。")))
+    assert "设定：王五的仇人" in llm.prompts["reviewer"][0]
+
