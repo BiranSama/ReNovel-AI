@@ -43,9 +43,9 @@ def test_png_v1(parser, tmp_path, key):
     assert parser.parse_card(write_png(tmp_path / "c.png", CARD, key)) == CARD
 
 
-@pytest.mark.xfail(strict=True, reason="已知 bug：PNG 里的 V2 卡没有像 JSON 那样解开 data 字段")
-def test_png_v2_is_unwrapped(parser, tmp_path):
-    assert parser.parse_card(write_png(tmp_path / "c.png", CARD_V2)) == CARD
+@pytest.mark.parametrize("key", ["chara", "ccv3"])
+def test_png_v2_is_unwrapped(parser, tmp_path, key):
+    assert parser.parse_card(write_png(tmp_path / "c.png", CARD_V2, key)) == CARD
 
 
 @pytest.mark.parametrize("filename", ["plain.png", "card.txt"])

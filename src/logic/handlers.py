@@ -1,8 +1,11 @@
 from nicegui import ui
 from src.core.managers import mgr, GraphEngine
 from src.ui.state import app_state
+from src.llm import LLMError
+from src.services.refine import RefineRequest
+from src.services.importer import UnsupportedEncoding, decode_text
+from src.services.batch import BACKUP_SUFFIX, DEFAULT_INSTRUCTION
 import asyncio
-import json
 import functools
 
 # ==========================
@@ -42,29 +45,16 @@ def split_text(text):
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     return [{'original': line, 'revised': ''} for line in lines]
 
+def current_text():
+    """编辑器里当前显示的正文（全文模式取草稿，分段模式取合并结果）。"""
+    return app_state.full_text_draft if app_state.view_mode == 'full' else merge_text()
+
 def merge_text():
     lines = []
     for seg in app_state.segments:
         content = seg['revised'] if seg['revised'] else seg['original']
         if content.strip(): lines.append(content)
     return "\n\n".join(lines)
-
-def assemble_prompt(role_key):
-    if not app_state.settings: return ""
-    role_conf = app_state.settings.get_role_config(role_key)
-    blocks = role_conf.get('prompt_blocks', {})
-    if not blocks: return role_conf.get('system_prompt', '')
-    
-    is_nsfw = app_state.settings.is_nsfw_enabled()
-    safety = blocks.get('nsfw_override', '') if is_nsfw else blocks.get('safety', '')
-    return f"### Role\n{blocks.get('persona','')}\n### Task\n{blocks.get('objective','')}\n### Style\n{blocks.get('style','')}\n### Safety\n{safety}"
-
-def clean_json_response(text):
-    try:
-        start = text.find('{'); end = text.rfind('}') + 1
-        if start != -1 and end != -1: return json.loads(text[start:end])
-    except: pass
-    return None
 
 async def _extract_upload_info(e):
     filename = "unknown_file"
@@ -101,53 +91,27 @@ def refresh_graph_ui():
         app_state.ui['graph_chart'].options['series'][0]['links'] = data['links']
         app_state.ui['graph_chart'].update()
 
-async def bg_build_graph(pid, content, incremental=False):
-    if not GraphEngine: return
-    
-    g_conf = app_state.settings.get_role_config('graph')
-    if not g_conf.get('api_key'):
-        w_conf = app_state.settings.get_role_config('writer')
-        if w_conf.get('api_key'):
-            g_conf = w_conf.copy()
-            g_conf['prompt_blocks'] = app_state.settings.get_role_config('graph').get('prompt_blocks', {})
-        else:
-            ui.notify('错误：未配置 API Key', type='negative')
-            return
-
-    update_status("后台图谱构建中...", 0.1)
+async def bg_build_graph(pid, chapter_ids=None):
+    """后台更新图谱：只分析内容有变化的章节（可限定章节）。在后台任务中运行，进度显示在状态栏。"""
+    if not GraphEngine or app_state.graph_task_running: return
+    engine = mgr.current_graph_engine
+    if not engine or engine.project_id != pid: engine = GraphEngine(pid)
     app_state.graph_task_running = True
-    mgr.load_graph(pid)
-    
-    chapters = []
-    if '第' in content[:1000]: 
-        chapters = [{'title': f'Ch{i}', 'content': c} for i, c in enumerate(content.split('第')) if len(c) > 100]
-    if len(chapters) < 1:
-        chunk_size = 3000
-        for i in range(0, len(content), chunk_size):
-            chapters.append({'title': f'Part {i//chunk_size + 1}', 'content': content[i:i+chunk_size]})
-
-    update_status(f"正在分析 {len(chapters)} 个切片...", 0.1)
-
-    await mgr.current_graph_engine.build_graph_from_chapters(
-        chapters, 
-        lambda m, p: (update_status(m,p), refresh_graph_ui()), 
-        config=g_conf
-    )
-    
-    app_state.graph_task_running = False
-    update_status("✅ 图谱构建完成", 1.0)
+    update_status("图谱更新中...", 0.0)
+    try:
+        added = await mgr.graph.update(engine, pid, on_progress=lambda m, p: (update_status(m, p), refresh_graph_ui()),
+                                       chapter_ids=chapter_ids)
+        update_status(f"图谱已更新：新增 {added} 条关系", 1.0)
+    except LLMError as e:
+        update_status(f"图谱更新失败：{e}", 1.0)
+    finally:
+        app_state.graph_task_running = False
     refresh_graph_ui()
 
 async def update_graph_incrementally():
     if not app_state.current_project_id: return
-    ui.notify('全书扫描中...')
-    chs = await mgr.pm.get_chapters(app_state.current_project_id)
-    full_content = ""
-    for c in chs:
-        txt = await mgr.pm.get_chapter_content(c['id'])
-        full_content += f"第{c['title']}\n{txt}\n"
-    
-    asyncio.create_task(bg_build_graph(app_state.current_project_id, full_content, incremental=True))
+    ui.notify('正在分析有变化的章节...')
+    asyncio.create_task(bg_build_graph(app_state.current_project_id))
 
 # ==========================
 # 3. 项目与 IO
@@ -169,7 +133,7 @@ async def refresh_chapter_list():
 
 async def load_chapter(cid):
     c = await mgr.pm.get_chapter_content(cid)
-    if c:
+    if c is not None:  # 空章节（内容被清空并保存）也要能选中
         app_state.current_chapter_id = cid
         app_state.segments = split_text(c)
         
@@ -213,20 +177,22 @@ async def auto_load_latest_project():
     await refresh_project_list()
 
 async def save_all():
-    # 如果是全文模式，先同步回 segments
+    # 全文模式先同步回 segments；内容被清空时也要同步，才能保存空章节
     if app_state.view_mode == 'full':
-        if app_state.full_text_draft:
-            app_state.segments = split_text(app_state.full_text_draft)
-            if _renderer:
-                try: _renderer()
-                except RuntimeError: pass
-    
+        app_state.segments = split_text(app_state.full_text_draft or "")
+        if _renderer:
+            try: _renderer()
+            except RuntimeError: pass
+
     txt = merge_text()
     if app_state.current_chapter_id:
         await mgr.pm.update_chapter_content(app_state.current_chapter_id, txt)
-        # 实时 RAG 索引
-        if app_state.current_project_id: mgr.rag.index_chapter(app_state.current_project_id, app_state.current_chapter_id, txt)
-        ui.notify('✅ 已保存 (含RAG更新)')
+        if app_state.current_project_id:
+            mgr.rag.index_chapter(app_state.current_project_id, app_state.current_chapter_id, txt)
+            # 已建立图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）
+            if mgr.current_graph_engine and mgr.current_graph_engine.is_built():
+                asyncio.create_task(bg_build_graph(app_state.current_project_id, {app_state.current_chapter_id}))
+        ui.notify('✅ 已保存（记忆已更新）')
 
 # ==========================
 # 4. 文件处理
@@ -235,7 +201,10 @@ async def handle_novel_upload(e, dialog):
     fname, cbytes = await _extract_upload_info(e)
     if not cbytes: return ui.notify("文件错误", type='negative')
     
-    content = cbytes.decode('utf-8', 'ignore')
+    try:
+        content = decode_text(cbytes)  # 自动识别 UTF-8 / GBK / Big5 等，不再静默丢字
+    except UnsupportedEncoding as err:
+        return ui.notify(str(err), type='negative')
     pid = await mgr.pm.create_project(fname, "Imported")
     await mgr.pm.import_content(pid, content)
     
@@ -259,199 +228,162 @@ async def handle_novel_upload(e, dialog):
     await refresh_project_list()
     
     if should_build and GraphEngine:
-        await asyncio.sleep(1)
-        asyncio.create_task(bg_build_graph(pid, content))
+        asyncio.create_task(bg_build_graph(pid))
 
 async def create_backup():
     if not app_state.current_project_id: return
     ui.notify('备份中...')
-    nid = await mgr.pm.duplicate_project(app_state.current_project_id, "(副本)")
-    if nid:
-        if mgr.rag: mgr.rag.clone_project_memory(app_state.current_project_id, nid)
-        ui.notify('副本创建成功')
-        await refresh_project_list()
+    await mgr.batch.make_backup(app_state.current_project_id, "(副本)")
+    ui.notify('副本创建成功')
+    await refresh_project_list()
+    await refresh_backup_list()
 
-async def refresh_backup_list(container): pass # 兼容
+async def refresh_backup_list():
+    container = app_state.ui.get('backup_list')
+    if not container or not app_state.current_project_id: return
+    backups = await mgr.pm.get_backups(app_state.current_project_id)
+    container.clear()
+    with container:
+        if not backups: ui.label('当前项目还没有副本').classes('text-xs text-gray-400 p-2')
+        for p in backups:
+            with ui.row().classes('w-full items-center justify-between px-2 py-1 border-b no-wrap'):
+                with ui.column().classes('gap-0 min-w-0'):
+                    ui.label(p['title']).classes('text-sm truncate')
+                    ui.label(p['created_at'][:16].replace('T', ' ')).classes('text-xs text-gray-400')
+                ui.button('打开', on_click=lambda _, pid=p['id'], t=p['title']: open_backup(pid, t)).props('flat dense size=sm')
+
+async def open_backup_dialog():
+    app_state.ui['backup_dialog'].open()
+    await refresh_backup_list()
+
+async def open_backup(pid, title):
+    app_state.ui['backup_dialog'].close()
+    await switch_project(pid, title)
 
 # ==========================
 # 5. AI Workflow (核心)
 # ==========================
-async def generate_smart_query(target_text, context_prev):
-    prompt = f"Context: {context_prev[-300:]}\nTarget: {target_text}\nExtract 3 keywords."
-    kw = ""
-    try:
-        conf = app_state.settings.get_role_config('writer').copy()
-        conf['system_prompt'] = "Keyword Extractor" 
-        async for token in mgr.llm.stream_rewrite(target_text, prompt, conf): kw += token
-    except: return target_text
-    return kw.strip()
+async def refine_request(text, instr):
+    return RefineRequest(
+        text=text,
+        instruction=instr,
+        project_id=app_state.current_project_id,
+        chapter_index=await _get_current_chapter_index(),
+        persona=app_state.active_system_prompt or "",
+    )
 
 async def run_analyzer(text, instr):
     ui.notify('军师分析中...', type='info')
-    chap_idx = await _get_current_chapter_index()
-    rag_info = mgr.rag.search_context("核心冲突", app_state.current_project_id) if app_state.current_project_id else ""
-    graph_info = ""
-    if mgr.current_graph_engine:
-        kw = await generate_smart_query(text[:500], "")
-        graph_info = mgr.current_graph_engine.query_context(kw, chap_idx, mode='author') # 上帝视角
-    
-    prompt = f"【分析】\n指令：{instr}\n片段：{text[:800]}...\n设定：{rag_info}\n图谱：{graph_info}\n请输出简报：1.可行性 2.风险(OOC/伏笔) 3.建议"
-    sys = assemble_prompt('analyzer')
-    conf = app_state.settings.get_role_config('analyzer').copy(); conf['system_prompt'] = sys
-    res = ""
-    async for t in mgr.llm.stream_rewrite(text, prompt, conf): res += t
-    return res
+    return await mgr.refine.analyze(await refine_request(text, instr))
 
 async def _atomic_rewrite_segment(seg, instr, dialog_callback=None):
-    """原子重写：支持 UI 模式和 Batch 模式"""
+    """单段精修。dialog_callback 为空（批量）时审校不通过自动重试。Writer 失败抛 LLMError。"""
     target = seg['original'] or ""
     if not target.strip(): return
-    
-    chap_idx = await _get_current_chapter_index()
-    
-    # 1. 知识检索
-    rag_res = ""
-    keywords = ""
-    if app_state.current_project_id:
-        keywords = await generate_smart_query(target, "")
-        rag_res = mgr.rag.search_context(keywords, app_state.current_project_id)
-        
-    graph_res = ""
-    if mgr.current_graph_engine and keywords:
-        # Writer 只能用 Reader 视角
-        graph_res = mgr.current_graph_engine.query_context(keywords, chap_idx, mode='reader') 
 
-    # 2. Prompt
-    sys = assemble_prompt('writer')
-    if app_state.active_system_prompt: sys = f"{app_state.active_system_prompt}\n{sys}"
-    conf = app_state.settings.get_role_config('writer').copy(); conf['system_prompt'] = sys
-    
-    prompt = f"{rag_res}\n{graph_res}\n【目标】{target}\n【指令】{instr}"
-    
-    # 3. 执行 Writer
-    res = ""
-    try:
-        async for t in mgr.llm.stream_rewrite(target, prompt, conf):
-            res += t
-            # 仅在有 UI 组件时流式更新
-            if seg.get('ui_component'): seg['ui_component'].value = res
-    except Exception as e: print(f"Writer Error: {e}")
-    
-    seg['revised'] = res
-    
-    # 4. Reviewer 闭环
-    if app_state.settings.is_reviewer_enabled():
-        rev_sys = assemble_prompt('reviewer')
-        rev_conf = app_state.settings.get_role_config('reviewer').copy(); rev_conf['system_prompt'] = rev_sys
-        
-        # Reviewer 用上帝视角
-        graph_god = ""
-        if mgr.current_graph_engine:
-            graph_god = mgr.current_graph_engine.query_context(keywords, chap_idx, mode='author')
-            
-        rev_prompt = f"【上帝资料】{graph_god}\n【原文】{target}\n【改写】{res}\n【指令】{instr}\n请评分(JSON)"
-        
-        try:
-            rev_res = ""
-            async for t in mgr.llm.stream_rewrite("", rev_prompt, rev_conf): rev_res += t
-            r_data = clean_json_response(rev_res)
-            
-            if r_data and r_data.get('score', 0) < app_state.settings.get_review_threshold():
-                # 模式分流
-                if dialog_callback:
-                    # UI 模式：弹窗
-                    action = await dialog_callback(seg, r_data, res)
-                    if action['action'] == 'retry': 
-                        # 重试逻辑：递归调用自己，或在这里简单重跑
-                        # 为了防止无限递归，这里只简单做一次自动修正重试
-                        pass 
-                else:
-                    # 【核心修复】Batch 模式：自动重试
-                    print(f"[Batch] Reviewer 驳回，自动修正: {r_data.get('suggestion')}")
-                    retry_prompt = f"{prompt}\n【总监修改意见 (必须执行)】: {r_data.get('suggestion')}"
-                    retry_res = ""
-                    async for t in mgr.llm.stream_rewrite(target, retry_prompt, conf): retry_res += t
-                    seg['revised'] = retry_res # 更新为修正版
-                    
-        except Exception as e: print(f"Reviewer Error: {e}")
-    
-    return seg['revised']
+    def show(text):
+        if seg.get('ui_component'): seg['ui_component'].value = text
 
-async def run_seg_logic(idx, instr, dialog_cb):
-    seg = app_state.segments[idx]
-    await _atomic_rewrite_segment(seg, instr, dialog_cb)
+    on_reject = None
+    asked = []
+    if dialog_callback:
+        async def on_reject(review, text, can_retry):
+            asked.append(review)
+            action = await dialog_callback(seg, {'score': review.score, 'suggestion': review.suggestion}, text,
+                                           can_retry=can_retry)
+            if action['action'] != 'retry': return None
+            return action.get('feedback') or review.suggestion
+
+    result = await mgr.refine.refine(await refine_request(target, instr), on_text=show, on_reject=on_reject)
+    seg['revised'] = result.text
+    notify_review(result.review, asked)
+    return result
+
+def notify_review(review, asked=()):
+    """审校失败或最终未通过时提示；用户已在弹窗里看过这次审校意见的不再重复提示。"""
+    if not review: return
+    if review.error:
+        ui.notify(f'审校未完成：{review.error}', type='warning')
+    elif not review.passed and review not in asked:
+        ui.notify(f'重试 {mgr.settings.get_max_review_retries()} 次后仍未通过审校（{review.score:g} 分），'
+                  f'已保留最后一次改写：{review.suggestion}', type='warning', multi_line=True)
 
 # ==========================
 # Batch Task
 # ==========================
-async def open_batch_console():
+async def open_batch_console(instruction=""):
     if not app_state.current_project_id: return ui.notify('请先导入', type='warning')
+    if app_state.is_batch_running: return ui.notify('已有批量任务在运行', type='warning')
     all_chs = await mgr.pm.get_chapters(app_state.current_project_id)
-    task_conf = {'scope': 'current', 'create_backup': True, 'selected': set()}
-    
+    remaining = await mgr.batch.remaining_chapters(app_state.current_project_id)
+    task_conf = {'scope': 'current', 'create_backup': True, 'selected': [], 'instruction': instruction}
+
     def render_ch_list(container):
         container.clear()
         with container:
             scope = task_conf['scope']; targets = []
-            if scope == 'current' and app_state.current_chapter_id: 
+            if scope == 'current' and app_state.current_chapter_id:
                 targets = [c for c in all_chs if c['id'] == app_state.current_chapter_id]
             elif scope == 'all': targets = all_chs
-            task_conf['selected'] = set(c['id'] for c in targets)
+            elif scope == 'resume': targets = remaining
+            task_conf['selected'] = [c['id'] for c in targets]
             for c in targets: ui.label(c['title']).classes('text-sm border-b')
 
     with ui.dialog() as d, ui.card().classes('w-full max-w-3xl'):
         ui.label('批量任务').classes('text-lg font-bold')
         with ui.row().classes('w-full gap-4'):
             with ui.column().classes('w-1/3'):
-                ui.radio({'current':'本章','all':'全书'}, value='current', on_change=lambda: render_ch_list(ch_area)).bind_value(task_conf, 'scope')
-                ui.checkbox('创建副本', value=True).bind_value(task_conf, 'create_backup')
+                ui.radio({'current': '本章', 'all': '全书', 'resume': f'继续上次进度（剩 {len(remaining)} 章）'},
+                         value='current', on_change=lambda: render_ch_list(ch_area)).bind_value(task_conf, 'scope')
+                ui.checkbox('创建副本（在副本上改写，原项目不动）', value=True).bind_value(task_conf, 'create_backup') \
+                    .bind_visibility_from(task_conf, 'scope', backward=lambda s: s != 'resume')
             with ui.column().classes('w-2/3'):
                 ch_area = ui.scroll_area().classes('h-48 border rounded p-2 w-full')
                 render_ch_list(ch_area)
         with ui.row().classes('w-full justify-end'):
-            ui.button('启动', on_click=lambda: start_batch_execution(task_conf, d, all_chs)).props('color=indigo')
+            ui.button('启动', on_click=lambda: start_batch_execution(task_conf, d)).props('color=indigo')
     d.open()
 
-async def start_batch_execution(conf, dlg, all_chs):
-    ids = conf['selected']
+async def start_batch_execution(conf, dlg):
+    ids = list(conf['selected'])
     if not ids: return ui.notify('无章节')
     dlg.close()
-    
+
     pid = app_state.current_project_id
-    if conf['create_backup']:
+    if conf['create_backup'] and conf['scope'] != 'resume':
         ui.notify('备份中...')
-        pid = await mgr.pm.duplicate_project(pid, "(批量副本)")
-        if mgr.rag: mgr.rag.clone_project_memory(app_state.current_project_id, pid)
-        await switch_project(pid, app_state.current_project_title+"(批量副本)")
-    
+        pid, mapping = await mgr.batch.make_backup(pid)
+        ids = [mapping[i] for i in ids]
+        await switch_project(pid, f"{app_state.current_project_title} {BACKUP_SUFFIX}")
+        await refresh_project_list()
+
+    def progress(p):
+        if p.chapters_done < p.chapters_total:
+            update_status(f'批量：{p.chapter_title}（第 {p.chapters_done + 1}/{p.chapters_total} 章，'
+                          f'第 {p.paragraphs_done + 1}/{p.paragraphs_total} 段）', p.fraction)
+
     app_state.is_batch_running = True; app_state.stop_signal = False
-    update_status("批量任务启动...", 0.1)
-    
-    targets = [c for c in all_chs if c['id'] in ids]
-    global_instr = "精修文本，保持原意，提升文笔。"
-    
-    for i, ch in enumerate(targets):
-        if app_state.stop_signal: break
-        update_status(f'处理: {ch["title"]} ({i+1}/{len(targets)})', (i+1)/len(targets))
-        
-        await load_chapter(ch['id'])
-        
-        # 核心循环
-        for seg in app_state.segments:
-            if app_state.stop_signal: break
-            if not seg['original'].strip(): continue
-            
-            # 【核心修复】调用原子逻辑，不传 dialog_callback，触发自动模式
-            await _atomic_rewrite_segment(seg, global_instr, dialog_callback=None)
-            
-            # 稍微暂停，避免 API 速率限制
-            await asyncio.sleep(0.2)
-        
-        await save_all()
-        await mgr.pm.save_progress(pid, ch['id'])
-        
-    app_state.is_batch_running = False
-    update_status("批量任务完成", 1.0)
+    update_status("批量任务启动...", 0.0)
+    try:
+        outcome = await mgr.batch.run(pid, ids, conf.get('instruction') or DEFAULT_INSTRUCTION,
+                                      on_progress=progress, should_stop=lambda: app_state.stop_signal)
+    finally:
+        app_state.is_batch_running = False
+
+    summary = f'完成 {outcome.chapters_done}/{outcome.chapters_total} 章'
+    if outcome.error:
+        ui.notify(f'批量任务出错已停止（{summary}）：{outcome.error}', type='negative')
+    elif outcome.stopped:
+        ui.notify(f'批量任务已停止（{summary}）。当前章未完成的部分未保存，可用“继续上次进度”接着跑', type='warning')
+    else:
+        ui.notify(f'批量任务完成（{summary}）', type='positive')
+    if outcome.review_errors:
+        ui.notify(f'{outcome.review_errors} 段审校未完成，已保留改写结果', type='warning')
+    if outcome.review_rejected:
+        ui.notify(f'{outcome.review_rejected} 段重试后仍未通过审校，已保留最后一次改写', type='warning')
+    update_status(f'批量：{summary}', 1.0)
+    if app_state.current_chapter_id and app_state.current_project_id == pid:
+        await load_chapter(app_state.current_chapter_id)  # 刷新编辑器里的当前章
 
 # ==========================
 # Chat Logic
@@ -459,31 +391,16 @@ async def start_batch_execution(conf, dlg, all_chs):
 async def send_chat_msg():
     chat_input = app_state.ui.get('chat_input')
     if not chat_input: return ui.notify("输入框未就绪", type='warning')
-    msg = chat_input.value; chat_input.value = "" 
+    msg = chat_input.value; chat_input.value = ""
     if not msg: return
-    
+
     with app_state.ui['chat_container']: ui.label(msg).classes('chat-bubble chat-user')
     mode = app_state.ui['chat_mode'].value if app_state.ui['chat_mode'] else 'chapter'
-    
-    ctx = ""
-    if mode == 'chapter':
-        txt = merge_text()
-        k = await generate_smart_query(msg, txt[-500:])
-        rag_res = mgr.rag.search_context(k, app_state.current_project_id)
-        graph_res = mgr.current_graph_engine.query_context(k, 999, 'reader') if mgr.current_graph_engine else ""
-        ctx = f"【本章】\n{txt[:2000]}\n{rag_res}\n{graph_res}"
-    else:
-        k = await generate_smart_query(msg, "")
-        rag_res = mgr.rag.search_context(k, app_state.current_project_id)
-        graph_res = mgr.current_graph_engine.query_context(k, 999, 'reader') if mgr.current_graph_engine else ""
-        ctx = f"{rag_res}\n{graph_res}"
-        
-    sys = assemble_prompt('chat')
-    conf = app_state.settings.get_role_config('chat').copy(); conf['system_prompt'] = sys
-    
     with app_state.ui['chat_container']: bubble = ui.label('Thinking...').classes('chat-bubble chat-ai')
-    res = ""; 
+    res = ""
     try:
-        async for t in mgr.llm.stream_rewrite(f"{ctx}\n问：{msg}", "", conf):
+        async for t in mgr.chat.answer(msg, app_state.current_project_id, await _get_current_chapter_index(),
+                                       current_text(), mode):
             res += t; bubble.text = res
-    except: bubble.text = "Error"
+    except LLMError as e:
+        bubble.text = f"出错：{e}"

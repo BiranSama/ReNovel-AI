@@ -3,6 +3,7 @@
 按请求内容返回可预测的结果，让冒烟测试不依赖真实 API Key 和网络。
 用法: python fake_llm.py <port>
 """
+import asyncio
 import json
 import sys
 import time
@@ -15,6 +16,10 @@ app = FastAPI()
 CALLS: list[dict] = []
 
 REWRITE_MARK = "【FAKE改写】"
+REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
+REJECT_ALWAYS = "【总是驳回】"  # 指令里带上它时，每次审校都给低分
+SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
+_rejected: set[str] = set()
 
 
 def reply_for(messages: list[dict]) -> str:
@@ -26,6 +31,11 @@ def reply_for(messages: list[dict]) -> str:
             ensure_ascii=False,
         )
     if "评分" in user:  # Reviewer 打分
+        if REJECT_ALWAYS in user:
+            return json.dumps({"score": 2, "suggestion": "节奏太慢"}, ensure_ascii=False)
+        if REJECT_ONCE in user and REJECT_ONCE not in _rejected:
+            _rejected.add(REJECT_ONCE)
+            return json.dumps({"score": 3, "suggestion": "形容词太多"}, ensure_ascii=False)
         return json.dumps({"score": 9, "suggestion": "ok"}, ensure_ascii=False)
     if "Extract 3 keywords" in user:  # 检索关键词
         return "张三 李四 咖啡馆"
@@ -46,7 +56,9 @@ def calls():
 async def chat(req: Request):
     body = await req.json()
     messages = body["messages"]
-    CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"][:200]})
+    CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"]})
+    if SLOW in messages[-1]["content"]:
+        await asyncio.sleep(1)
     text = reply_for(messages)
     created = int(time.time())
 

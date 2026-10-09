@@ -1,7 +1,4 @@
-"""导入分章的特征测试：锁定 ProjectManager.import_content 的现有行为，重构时必须保持。
-
-标记为 xfail(strict=True) 的是已知问题，修复后 xfail 会变成失败，提醒移除标记。
-"""
+"""导入分章：ProjectManager.import_content 端到端写库后的章节结果。"""
 import asyncio
 
 import pytest
@@ -66,20 +63,43 @@ def test_text_without_headings_becomes_single_chapter(pm):
     assert split(pm, BODY * 3) == [("全文", 0, (BODY * 3).replace("　", " "))]
 
 
-@pytest.mark.xfail(strict=True, reason="已知问题：少于 3 个标题时不分章，整本书成为一个“全文”章节")
 def test_two_chapters_are_split(pm):
     text = "第一章 开端\n" + BODY * 2 + "第二章 发展\n" + BODY * 2
     assert titles(pm, text) == ["第一章 开端", "第二章 发展"]
 
 
-@pytest.mark.xfail(strict=True, reason="已知 bug：正文不足 10 字的章节被静默丢弃（数据丢失）")
 def test_short_chapter_is_kept(pm):
     text = "第一章 开端\n短。\n第二章 发展\n" + BODY * 2 + "第三章 高潮\n" + BODY * 2
-    assert titles(pm, text) == ["第一章 开端", "第二章 发展", "第三章 高潮"]
+    chapters = split(pm, text)
+    assert [t for t, _, _ in chapters] == ["第一章 开端", "第二章 发展", "第三章 高潮"]
+    assert chapters[0][2] == "短。"
 
 
-@pytest.mark.xfail(strict=True, reason="已知 bug：以“第X章”开头的正文行被当成标题")
+def test_single_chapter_heading_still_splits_preface(pm):
+    assert titles(pm, "\u3000\u3000楔子内容。\n第一章 开端\n" + BODY) == ["【序章】", "第一章 开端"]
+
+
+def test_volume_heading_without_body_is_skipped(pm):
+    text = "第一卷 风起\n第一章 开端\n" + BODY + "第二章 发展\n" + BODY
+    chapters = split(pm, text)
+    assert [(t, i) for t, i, _ in chapters] == [("第一章 开端", 0), ("第二章 发展", 1)]
+
+
+def test_heading_may_end_with_question_mark(pm):
+    assert titles(pm, "第一章 他是谁？\n" + BODY + "第二章 真相！\n" + BODY) == ["第一章 他是谁？", "第二章 真相！"]
+
+
 def test_body_line_starting_with_chapter_word_is_not_a_heading(pm):
     text = ("第一章 开端\n" + BODY + "第三章里埋下的伏笔，此刻终于揭开。\n" + BODY
             + "第二章 发展\n" + BODY * 2 + "第三章 高潮\n" + BODY * 2)
     assert titles(pm, text) == ["第一章 开端", "第二章 发展", "第三章 高潮"]
+
+
+def test_volume_heading_with_numbered_chapters(pm):
+    text = "第一卷 风起\n1. 开始\n" + BODY + "2. 继续\n" + BODY + "3. 结束\n" + BODY
+    assert titles(pm, text) == ["1. 开始", "2. 继续", "3. 结束"]
+
+
+def test_volumes_without_chapter_headings_split_by_volume(pm):
+    text = "第一卷 风起\n" + BODY * 2 + "第二卷 云涌\n" + BODY * 2
+    assert titles(pm, text) == ["第一卷 风起", "第二卷 云涌"]

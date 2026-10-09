@@ -24,9 +24,10 @@ def test_build_graph_on_import(page, app):
         files = list((app.data_dir / "projects").glob("*_graph.json"))
         if files:
             graph = json.loads(files[0].read_text(encoding="utf-8"))
-            if graph["links"]:
+            if len(graph["graph"].get("extracted", {})) == 6:  # 6 章都处理完（序章太短，记录指纹但不调用模型）
                 break
         time.sleep(1)
 
     assert graph and graph["links"], app.log_tail()
     assert {n["id"] for n in graph["nodes"]} == {"张三", "李四"}
+    assert len(graph["links"]) == 1  # 每章都抽到同一条关系，只保留一条

@@ -1,14 +1,14 @@
 import aiosqlite
 import uuid
-import re
 import json
 from datetime import datetime
 
-DB_PATH = "data/projects/novelforge.db"
+from src import paths
+from src.services.importer import split_chapters
 
 class ProjectManager:
     def __init__(self):
-        self.db_path = DB_PATH
+        self.db_path = str(paths.db_file())
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -56,10 +56,14 @@ class ProjectManager:
             
             new_pid = str(uuid.uuid4())
             new_title = f"{original_project['title']} {suffix}"
-            
+            settings = json.loads(original_project['world_settings'] or '{}')
+            settings['backup_of'] = project_id              # 供“历史副本”列出
+            settings['last_polished_chapter_id'] = None     # 副本的批量进度从头开始
+            settings['polished_chapter_ids'] = []
+
             await db.execute(
                 "INSERT INTO projects (id, title, description, created_at, world_settings) VALUES (?, ?, ?, ?, ?)",
-                (new_pid, new_title, original_project['description'], datetime.now().isoformat(), original_project['world_settings'])
+                (new_pid, new_title, original_project['description'], datetime.now().isoformat(), json.dumps(settings))
             )
             
             async with db.execute("SELECT * FROM chapters WHERE project_id = ?", (project_id,)) as cursor:
@@ -85,6 +89,11 @@ class ProjectManager:
             cursor = await db.execute("SELECT * FROM projects ORDER BY created_at DESC")
             return [dict(row) for row in await cursor.fetchall()]
             
+    async def get_backups(self, project_id: str):
+        """由该项目创建的副本，新的在前。"""
+        projects = await self.get_projects()
+        return [p for p in projects if json.loads(p.get('world_settings') or '{}').get('backup_of') == project_id]
+
     async def get_chapters(self, project_id: str):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -95,7 +104,7 @@ class ProjectManager:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("SELECT content FROM chapters WHERE id = ?", (chapter_id,))
             row = await cursor.fetchone()
-            return row[0] if row else ""
+            return (row[0] or "") if row else None  # 章节不存在返回 None；空章节返回 ""
 
     async def update_chapter_content(self, chapter_id: str, new_content: str):
         async with aiosqlite.connect(self.db_path) as db:
@@ -104,7 +113,7 @@ class ProjectManager:
 
     # --- 新增：进度存取 ---
     async def save_progress(self, project_id: str, chapter_id: str):
-        """记录当前精修到了哪一章"""
+        """记录批量精修已完成的章节（逐章累计，续跑时跳过这些章节）"""
         async with aiosqlite.connect(self.db_path) as db:
             # 先读取旧配置
             async with db.execute("SELECT world_settings FROM projects WHERE id = ?", (project_id,)) as cursor:
@@ -112,9 +121,18 @@ class ProjectManager:
                 current_settings = json.loads(row[0]) if row and row[0] else {}
             
             current_settings['last_polished_chapter_id'] = chapter_id
-            
+            done = current_settings.setdefault('polished_chapter_ids', [])
+            if chapter_id not in done: done.append(chapter_id)
+
             await db.execute("UPDATE projects SET world_settings = ? WHERE id = ?", (json.dumps(current_settings), project_id))
             await db.commit()
+
+    async def get_polished_chapter_ids(self, project_id: str) -> list:
+        """批量精修已完成的章节 id"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT world_settings FROM projects WHERE id = ?", (project_id,)) as cursor:
+                row = await cursor.fetchone()
+        return json.loads(row[0]).get('polished_chapter_ids', []) if row and row[0] else []
 
     async def get_progress(self, project_id: str):
         """获取上次精修的章节ID"""
@@ -126,44 +144,14 @@ class ProjectManager:
                     return settings.get('last_polished_chapter_id')
         return None
 
-    # --- 导入逻辑 (保持不变) ---
-    def _clean_text(self, text: str) -> str:
-        return text.replace("\xa0", " ").replace("\u3000", " ").replace("\r\n", "\n").replace("\r", "\n")
-
-    async def import_content(self, project_id: str, content: str):
-        content = self._clean_text(content)
-        patterns = [
-            r'(?m)^\s*(?:第[0-9零一二三四五六七八九十百千]+[章卷]|Chapter\s*\d+|Vol\.\d+).*?$',
-            r'(?m)^\s*\d+\.\s+.{0,30}$',
-            r'(?m)^\s*[【\[]\s*.*?\s*[】\]].*?$',
-            r'(?m)^\s*(?!.*[。，？！……：]$).{2,20}\s*$' 
-        ]
-        matches = []
-        for p in patterns:
-            regex = re.compile(p)
-            temp_matches = list(regex.finditer(content))
-            if len(temp_matches) > 2:
-                matches = temp_matches
-                break
-        
+    # --- 导入 ---
+    async def import_content(self, project_id: str, content: str) -> int:
+        """按 split_chapters 切分并写入章节，返回章节数。"""
+        chapters = split_chapters(content)
         async with aiosqlite.connect(self.db_path) as db:
-            if not matches:
-                await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), project_id, "全文", 0, content))
-            else:
-                if matches[0].start() > 0:
-                    preface = content[:matches[0].start()].strip()
-                    if preface:
-                        await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
-                            (str(uuid.uuid4()), project_id, "【序章】", -1, preface))
-
-                for i, match in enumerate(matches):
-                    title = match.group().strip()
-                    start = match.end()
-                    end = matches[i+1].start() if i + 1 < len(matches) else len(content)
-                    chapter_content = content[start:end].strip()
-                    if len(chapter_content) < 10: continue
-                    await db.execute("INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
-                        (str(uuid.uuid4()), project_id, title, i, chapter_content))
+            await db.executemany(
+                "INSERT INTO chapters (id, project_id, title, order_index, content) VALUES (?, ?, ?, ?, ?)",
+                [(str(uuid.uuid4()), project_id, c.title, c.order_index, c.content) for c in chapters],
+            )
             await db.commit()
-            return len(matches) if matches else 1
+        return len(chapters)

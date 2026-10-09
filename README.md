@@ -190,7 +190,7 @@ pip install -r requirements.txt
 | :--- | :--- |
 | Frontend | NiceGUI (Vue/FastAPI) |
 | Database | SQLite (Metadata) + ChromaDB (Vector) |
-| AI Core | LangChain (OpenAI 兼容接口 / Google Gemini) |
+| AI Core | OpenAI Python SDK（OpenAI 兼容接口：OpenAI / DeepSeek / 各类中转 / Ollama；Gemini 走官方兼容端点） |
 | Knowledge Graph | NetworkX + ECharts |
 
 ## 📂 目录结构
@@ -202,11 +202,16 @@ ReNovel-AI/
 │   ├── vectordb/              # ChromaDB 向量索引
 │   └── presets/               # 角色卡与预设
 ├── src/
-│   ├── ai/                    # LLM 客户端、RAG 向量记忆
-│   ├── core/                  # 项目/章节管理、配置、知识图谱、酒馆角色卡解析
-│   ├── logic/handlers.py      # 业务流程 (导入、改写、审校、批量、聊天、图谱)
+│   ├── services/              # 业务层（不依赖界面）：精修流程、导入、批量、聊天、图谱、上下文检索
+│   ├── llm/                   # 统一 LLM 客户端（OpenAI 兼容接口）与提示词组装
+│   ├── ai/                    # RAG 向量记忆
+│   ├── core/                  # 数据库读写、设置、知识图谱存储、酒馆角色卡解析
+│   ├── logic/handlers.py      # 界面事件处理（调用 services）
 │   ├── ui/                    # NiceGUI 界面 (主布局、面板、设置弹窗、全局状态)
-│   └── utils/logger.py        # 彩色控制台日志
+│   ├── utils/logger.py        # 彩色控制台日志
+│   └── paths.py               # 数据目录（开发 / exe / RENOVEL_DATA_DIR）
+├── tests/                     # 单元测试 + 冒烟测试（假 LLM + 浏览器）
+├── docs/ROADMAP.md            # 重构路线图与进度
 ├── FirstTime.py               # 初始化数据目录
 └── main.py                    # 启动入口
 ```

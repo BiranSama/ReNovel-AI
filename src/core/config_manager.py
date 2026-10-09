@@ -1,8 +1,7 @@
 import json
 import os
 
-# 配置文件存放在 data 目录下
-CONFIG_PATH = "data/config.json"
+from src import paths
 
 # 默认配置（如果第一次运行，或者配置文件坏了，就用这个）
 DEFAULT_CONFIG = {
@@ -18,7 +17,7 @@ DEFAULT_CONFIG = {
 
 class ConfigManager:
     def __init__(self):
-        self.path = CONFIG_PATH
+        self.path = str(paths.config_file())
         self._ensure_dir()
 
     def _ensure_dir(self):

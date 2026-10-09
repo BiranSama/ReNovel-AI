@@ -4,6 +4,7 @@ from src.ui.state import app_state
 from src.ui.components.settings_dialog import SettingsDialog
 from src.ui.layouts.panels import create_header, create_left_drawer, create_right_drawer
 import src.logic.handlers as h
+from src.llm import LLMError
 import asyncio
 
 app.on_startup(mgr.init_db)
@@ -35,9 +36,9 @@ def create_layout():
     for key in list(app_state.ui.keys()):
         app_state.ui[key] = None
 
-    settings = SettingsDialog()
+    settings = SettingsDialog(mgr.settings)
     settings.create_ui() 
-    app_state.settings = settings
+    app_state.settings = mgr.settings
     
     # 注册渲染器
     def safe_refresh():
@@ -67,12 +68,14 @@ def create_layout():
                 warn_rev = ui.textarea().props('readonly borderless filled').classes('full-height-textarea bg-yellow-50 rounded')
         ui.label('💡 修改建议:').classes('font-bold text-indigo-500')
         warn_input = ui.textarea().classes('w-full bg-white border p-1 rounded').props('outlined dense rows=2')
-        with ui.row().classes('w-full justify-end'):
-            ui.button('AI 重写', on_click=lambda: resolve_warn('retry', warn_input.value)).props('outline color=indigo')
+        with ui.row().classes('w-full justify-end items-center'):
+            warn_limit = ui.label('已达到最多重试次数，可接受当前结果后手动修改').classes('text-sm text-gray-500')
+            warn_retry = ui.button('AI 重写', on_click=lambda: resolve_warn('retry', warn_input.value)).props('outline color=indigo')
             ui.button('强制通过', on_click=lambda: resolve_warn('accept')).props('unelevated color=grey')
 
-    async def show_warning_dialog(seg, r_data, rev_text, original_text=None):
+    async def show_warning_dialog(seg, r_data, rev_text, original_text=None, can_retry=True):
         nonlocal warning_future
+        warn_retry.set_visibility(can_retry); warn_limit.set_visibility(not can_retry)
         warn_score.text = f"{r_data.get('score', 0)}分"
         orig = original_text if original_text is not None else seg.get('original', '') if seg else ''
         warn_orig.value = orig; warn_rev.value = rev_text; warn_input.value = r_data.get('suggestion', '')
@@ -85,11 +88,14 @@ def create_layout():
     # AI 逻辑
     # ==========================
     async def run_full_rewrite():
-        full_text = app_state.full_text_draft if app_state.view_mode == 'full' else h.merge_text()
+        full_text = h.current_text()
         if not full_text.strip(): return ui.notify('内容为空', type='warning')
 
-        instr = prompt_input.value or "精修"
-        report = await h.run_analyzer(full_text, instr)
+        request = await h.refine_request(full_text, prompt_input.value or "精修")
+        try:
+            report = await h.run_analyzer(full_text, request.instruction)
+        except LLMError as e:
+            return ui.notify(f'军师分析失败：{e}', type='negative')
 
         with ui.dialog() as d, ui.card().classes('w-full max-w-4xl'):
             ui.label('军师报告').classes('text-lg font-bold text-purple')
@@ -98,58 +104,49 @@ def create_layout():
                 ui.button('取消', on_click=d.close).props('flat')
                 ui.button('执行', on_click=lambda: d.submit(True)).props('color=purple')
         if not await d: return
+        request.guidance = report
 
-        sys = h.assemble_prompt('writer')
-        conf = settings.get_role_config('writer').copy(); conf['system_prompt'] = sys
-        prompt = f"【建议】{report}\n【指令】{instr}\n【原文】\n{full_text}"
+        def show(text):
+            if app_state.view_mode == 'full' and app_state.ui.get('full_text_area'):
+                app_state.ui['full_text_area'].value = text
 
-        current_try = 0
-        while current_try < 3:
-            current_try += 1
-            new_text = ""
-            try:
-                if app_state.view_mode == 'full':
-                    app_state.full_text_draft = ""; 
-                    if app_state.ui.get('full_text_area'): app_state.ui['full_text_area'].value = ""
+        asked = []
 
-                async for t in mgr.llm.stream_rewrite(full_text, prompt, conf):
-                    new_text += t
-                    if app_state.view_mode == 'full' and app_state.ui.get('full_text_area'):
-                        app_state.ui['full_text_area'].value += t
+        async def ask_user(review, text, can_retry):
+            asked.append(review)
+            action = await show_warning_dialog(
+                None, {'score': review.score, 'suggestion': review.suggestion}, text,
+                original_text=full_text, can_retry=can_retry)
+            if action['action'] != 'retry': return None
+            return action.get('feedback') or review.suggestion
 
-                if app_state.view_mode == 'segment':
-                    app_state.segments = h.split_text(new_text); editor_panel.refresh()
-                else:
-                    app_state.full_text_draft = new_text
+        try:
+            result = await mgr.refine.refine(request, on_text=show, on_reject=ask_user)
+        except LLMError as e:
+            return ui.notify(f'改写失败：{e}', type='negative')
 
-                if settings.is_reviewer_enabled():
-                    ui.notify('总监正在审核...', type='info')
-                    rev_sys = h.assemble_prompt('reviewer')
-                    rev_conf = settings.get_role_config('reviewer').copy(); rev_conf['system_prompt'] = rev_sys
-                    rev_res = ""
-                    async for t in mgr.llm.stream_rewrite("", f"原文:{full_text[:2000]}...\n改写:{new_text[:2000]}...\n请评分(JSON)", rev_conf): rev_res += t
-                    r_data = h.clean_json_response(rev_res)
-
-                    if r_data and r_data.get('score', 0) < settings.get_review_threshold():
-                        if settings.get_review_mode() == 'manual':
-                            res_action = await show_warning_dialog(None, r_data, new_text, original_text=full_text)
-                            if res_action['action'] == 'retry':
-                                prompt += f"\n\n【审校反馈】{res_action.get('feedback')}"
-                                continue
-                        else:
-                            prompt += f"\n\n【审校反馈】{r_data.get('suggestion')}"
-                            continue
-            except Exception as e: ui.notify(f'错误: {e}', type='negative'); break
-            break
-
+        if app_state.view_mode == 'segment':
+            app_state.segments = h.split_text(result.text); editor_panel.refresh()
+        else:
+            app_state.full_text_draft = result.text
+        h.notify_review(result.review, asked)
         ui.notify('全文重写完成')
-        if mgr.current_graph_engine:
-            asyncio.create_task(mgr.current_graph_engine.extract_from_text_stream(new_text, 999))
 
-    async def run_seg_rewrite_ui(idx):
+    async def run_seg_rewrite_ui(idx, button=None):
         seg = app_state.segments[idx]
-        instr = seg.get('prompt_input', {}).value if seg.get('prompt_input') and hasattr(seg['prompt_input'], 'value') else (prompt_input.value or "润色")
-        await h._atomic_rewrite_segment(seg, instr, lambda s, r, t: show_warning_dialog(s, r, t))
+        if seg.get('busy'): return  # 这一段正在改写，忽略重复点击
+        # 段落自己的局部指令优先；为空时用底部的全局指令
+        local = (getattr(seg.get('prompt_input'), 'value', '') or '').strip()
+        instr = local or prompt_input.value or "润色"
+        seg['busy'] = True
+        if button: button.props('loading')
+        try:
+            await h._atomic_rewrite_segment(seg, instr, show_warning_dialog)
+        except LLMError as e:
+            ui.notify(f'改写失败：{e}', type='negative')
+        finally:
+            seg['busy'] = False
+            if button: button.props(remove='loading')
         if seg.get('ui_component'): seg['ui_component'].value = seg.get('revised', '')
 
     # ==========================
@@ -210,7 +207,7 @@ def create_layout():
 
                             # 操作区
                             with ui.column().classes('w-[10%] pt-6 gap-2 items-center'):
-                                ui.button(icon='auto_fix_high', on_click=lambda i=i: run_seg_rewrite_ui(i)).props('round flat dense color=indigo').tooltip('精修')
+                                ui.button(icon='auto_fix_high', on_click=lambda e, i=i: run_seg_rewrite_ui(i, e.sender)).props('round flat dense color=indigo').tooltip('精修')
                                 ui.button(icon='delete', on_click=lambda i=i: (app_state.segments.pop(i), editor_panel.refresh())).props('round flat dense color=red size=sm')
                                 with ui.expansion('', icon='edit_note').props('dense flat'):
                                     seg['prompt_input'] = ui.input(placeholder='局部指令').props('dense outlined').classes('w-32 text-xs')
@@ -262,7 +259,7 @@ def create_layout():
         with ui.row().classes('w-full bg-slate-100 p-4 border-t items-center gap-4 flex-none h-20 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]'):
             with ui.row().classes('gap-1'):
                 ui.button('保存', on_click=h.save_all).props('unelevated color=green-6 dense icon=save')
-                ui.button(icon='file_download', on_click=lambda: ui.download(h.merge_text().encode('utf-8'), 'export.txt')).props('flat round dense')
+                ui.button(icon='file_download', on_click=lambda: ui.download(h.current_text().encode('utf-8'), 'export.txt')).props('flat round dense')
             
             ui.separator().props('vertical')
             
@@ -271,8 +268,12 @@ def create_layout():
             with ui.row().bind_visibility_from(app_state, 'view_mode', value='full'):
                 ui.button('AI 全文重写', on_click=run_full_rewrite).props('unelevated color=purple-6 text-white icon=auto_fix_normal size=md')
 
-            ui.button('批量', on_click=h.open_batch_console).props('flat dense color=indigo')
-            ui.button('停止', on_click=h.stop_workflow).props('outline color=red dense').classes('hidden')
+            ui.button('批量', on_click=lambda: h.open_batch_console(prompt_input.value)).props('flat dense color=indigo')
+            ui.button('停止', on_click=h.stop_workflow).props('outline color=red dense') \
+                .bind_visibility_from(app_state, 'is_batch_running')
+            with ui.column().classes('gap-0 w-56'):
+                app_state.ui['status_label'] = ui.label('').classes('text-xs text-gray-500 truncate w-full')
+                app_state.ui['status_progress'] = ui.linear_progress(value=0, show_value=False).classes('hidden w-full')
 
     # 强制首次渲染与数据加载
     ui.timer(0.1, lambda: (ensure_segments_safe(), editor_panel.refresh()), once=True)
