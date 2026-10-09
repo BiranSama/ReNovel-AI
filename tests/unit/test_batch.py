@@ -220,3 +220,25 @@ def test_conditional_update_only_writes_unchanged_content(setup):
     assert asyncio.run(pm.get_chapter_content(first)) == "甲一。\n甲二。"
     assert asyncio.run(pm.update_chapter_content(first, "新", expected="甲一。\n甲二。"))
     assert asyncio.run(pm.get_chapter_content(first)) == "新"
+
+
+def test_backup_drops_a_graph_cached_before_the_copy_finished(setup, tmp_path, monkeypatch):
+    """副本先建项目、后复制图谱：期间另一个标签页打开副本会缓存空图谱，复制完要让它重新读取。"""
+    from src.core.managers import GraphStore
+
+    monkeypatch.setenv("RENOVEL_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.core.managers.GraphEngine", lambda project_id: object())
+    pm, pid = setup
+    graphs = GraphStore()
+    service = BatchService(pm, FakeRefine(), graphs=graphs)
+    original = pm.duplicate_project
+
+    async def duplicate_and_open(project_id, suffix):
+        backup = await original(project_id, suffix)
+        graphs.get(backup)  # 另一个标签页此时打开了副本
+        duplicate_and_open.backup = backup
+        return backup
+
+    monkeypatch.setattr(pm, "duplicate_project", duplicate_and_open)
+    backup, _ = asyncio.run(service.make_backup(pid))
+    assert backup == duplicate_and_open.backup and backup not in graphs._engines
