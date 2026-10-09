@@ -19,6 +19,7 @@ class AppState:
         self.is_batch_running = False
         self.stop_signal = False
         self.graph_task_running = False
+        self.graph_pending = {}   # 项目 id → 等待分析图谱的章节 id（None 表示全部）
         self.memory_task_running = False
         self.memory_pending = {}  # 项目 id → 等待整理的章节 id（None 表示全部）
 

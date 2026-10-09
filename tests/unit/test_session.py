@@ -2,6 +2,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from src.services.batch import BatchOutcome
 from src.ui.session import Session
 
@@ -57,3 +59,81 @@ def test_batch_refreshes_memories_and_graph_of_rewritten_chapters(monkeypatch):
 
     asyncio.run(go())
     assert sorted(started) == [("graph", "P", {"c1"}), ("memory", "P", {"c1"})]
+
+
+class FakeStore:
+    async def has_any(self, pid):
+        return False
+
+
+class FakeProjects:
+    def __init__(self):
+        self.saved = {}
+
+    async def update_chapter_content(self, cid, text):
+        self.saved[cid] = text
+
+
+class FakeRag:
+    async def aindex_chapter(self, pid, cid, text):
+        pass
+
+
+def continuation_session(monkeypatch):
+    services = SimpleNamespace(pm=FakeProjects(), rag=FakeRag(), chapter_store=FakeStore(),
+                               graphs=SimpleNamespace(get=lambda pid: None))
+    session = Session(services)
+    session.state.current_project_id, session.state.current_chapter_id = "P", "c1"
+    monkeypatch.setattr("src.ui.session.ui.notify", lambda *a, **k: None)
+
+    async def no_memory(pid, ids):
+        pass
+
+    monkeypatch.setattr(session, "bg_update_memory", no_memory)
+    return session
+
+
+def test_adopting_paragraphs_in_full_text_mode_keeps_them(monkeypatch):
+    from src.services.continuation import ContinueRequest
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.view_mode, state.full_text_draft = "full", "甲。\n\n乙。"
+    request = ContinueRequest("P", 1, "甲。", "乙。", mode="paragraph", chapter_id="c1", after=1)
+
+    async def go():
+        await session.adopt_continuation(request, "续一。\n续二。")
+        await asyncio.sleep(0)
+
+    asyncio.run(go())
+    assert session.services.pm.saved["c1"] == "甲。\n\n续一。\n\n续二。\n\n乙。"
+
+
+def test_adopting_refuses_when_target_changed(monkeypatch):
+    from src.services.continuation import ContinueRequest
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    session.state.segments = split_text("甲。\n乙。")
+    stale = ContinueRequest("P", 1, "别的前文。", "乙。", mode="paragraph", chapter_id="c1", after=1)
+    other_chapter = ContinueRequest("P", 1, "甲。", "乙。", mode="paragraph", chapter_id="c2", after=1)
+    for request in (stale, other_chapter):
+        with pytest.raises(ValueError):
+            asyncio.run(session.adopt_continuation(request, "续。"))
+    assert session.services.pm.saved == {}
+
+
+def test_graph_updates_are_queued_across_projects():
+    calls = []
+    session = None
+
+    async def update(engine, project, on_progress=None, chapter_ids=None):
+        calls.append((project, chapter_ids))
+        if len(calls) == 1:
+            await session.bg_build_graph("B", {"b1"})  # 更新 A 时又保存了 B
+        return 0
+
+    services = SimpleNamespace(graphs=SimpleNamespace(get=lambda pid: object()), graph=SimpleNamespace(update=update))
+    session = Session(services)
+    asyncio.run(session.bg_build_graph("A"))
+    assert calls == [("A", None), ("B", {"b1"})] and session.state.graph_pending == {}

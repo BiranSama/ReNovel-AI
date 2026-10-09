@@ -33,6 +33,10 @@ class ContinueRequest:
     target_chars: int = 800
     title: str = ""        # 新章节的标题
     persona: str = ""
+    # 草稿采纳时写入的位置（生成时确定，采纳时不再看弹窗里的当前选项）
+    mode: str = "chapter"            # chapter：全书末尾新章节；paragraph：章节中某段之后
+    chapter_id: Optional[str] = None  # 段后续写所在的章节
+    after: int = 0                    # 段后续写：插在第几段之后
 
 
 def tail(text: str, limit: int) -> str:
@@ -56,12 +60,13 @@ class ContinuationService:
                             on_reject: Optional[OnReject] = None) -> RefineResult:
         """生成续写草稿（不保存）。Writer 调用失败时抛出 LLMError。"""
         context = self.pipeline.context
-        query = tail(request.preceding, 500) or request.outline
+        # 检索参考资料时带上大纲：大纲里提到、前文末尾没出现的角色也能查到档案与关系
+        query = "\n".join(p for p in (tail(request.preceding, 500), request.outline.strip()) if p)
         references = await context.gather(request.project_id, query, request.chapter_index, "reader")
         hooks = await self.open_hooks(request.project_id, request.chapter_index)
-        style = await self.pipeline.style_for(request.project_id)
+        snapshot = {}
 
-        def prompt(feedback: str) -> str:
+        def prompt(feedback: str, style) -> str:
             return join_sections(
                 section("参考资料", references),
                 section("前文埋下的伏笔（可酌情呼应，已经回收的忽略）", hooks),
@@ -76,8 +81,16 @@ class ContinuationService:
                 "只输出续写的正文，不要重复前文，不要写章节标题。",
             )
 
+        async def write(feedback: str) -> str:
+            # 每次尝试都重新读取文风档案，写与审用同一份
+            snapshot["style"] = await self.pipeline.style_for(request.project_id)
+            return await self.pipeline.stream_writer(prompt(feedback, snapshot["style"]), request.persona, on_text)
+
         async def review(candidate: str):
-            author = await context.gather(request.project_id, query, request.chapter_index, "author")
+            style = snapshot.get("style")
+            # 审校的资料按续写内容检索：续写里新出场的角色也要对照档案
+            author = await context.gather(request.project_id, f"{query}\n{candidate[:500]}", request.chapter_index,
+                                          "author")
             return await self.pipeline.ask_reviewer(join_sections(
                 section("设定资料（作者视角）", author),
                 section("文风档案", style_text(style)),
@@ -89,12 +102,7 @@ class ContinuationService:
                 STYLE_REVIEW_INSTRUCTION if style else "",
             ), with_style=bool(style))
 
-        return await write_with_review(
-            self.pipeline.settings,
-            lambda feedback: self.pipeline.stream_writer(prompt(feedback), request.persona, on_text),
-            review,
-            on_reject,
-        )
+        return await write_with_review(self.pipeline.settings, write, review, on_reject)
 
     async def open_hooks(self, project_id: Optional[str], chapter_index: int) -> str:
         """当前章节之前各章埋下的伏笔，越近越优先（无法判断是否已回收，交给模型斟酌）。"""

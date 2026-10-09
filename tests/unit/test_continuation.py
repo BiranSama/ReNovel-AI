@@ -7,7 +7,7 @@ import pytest
 
 from src.ai.embeddings import normalize
 from src.ai.rag_engine import RAGEngine
-from src.core.chapter_memory_store import ChapterMemory, ChapterMemoryStore
+from src.core.chapter_memory_store import ChapterMemory, ChapterMemoryStore, CharacterOverride
 from src.core.project_manager import ProjectManager
 from src.core.settings import AppSettings
 from src.core.style_store import StyleProfile, StyleStore
@@ -129,3 +129,31 @@ def test_adopting_a_new_chapter_appends_and_indexes(env):
     assert chapters[-1]["id"] == cid and chapters[-1]["title"] == "第四章 远行"
     assert chapters[-1]["order_index"] == chapters[-2]["order_index"] + 1
     assert rag.store.chapter_texts(pid, cid) == ["张三背起行囊，离开了长安城。"]
+
+
+def test_outline_and_draft_are_used_to_find_context(env):
+    """大纲里提到、前文末尾没出现的角色，Writer 也能拿到档案；续写里新出场的角色，Reviewer 也会对照档案。"""
+    pid, pm, _, llm, service = env
+    store = service.chapter_store
+    asyncio.run(store.save_override(pid, CharacterOverride("王五", notes="剑术宗师")))
+    asyncio.run(store.save_override(pid, CharacterOverride("赵六", notes="王五的仇人")))
+
+    async def stream(config, messages):
+        llm.prompts.setdefault(config["model"], []).append(messages[-1]["content"])
+        yield "赵六突然出现在门口。"
+
+    llm.stream = stream
+    asyncio.run(service.continue_text(ContinueRequest(pid, 4, "张三收拾行囊。", outline="王五前来送别")))
+    assert "设定：剑术宗师" in llm.prompts["writer"][0]  # 来自大纲
+    assert "设定：王五的仇人" in llm.prompts["reviewer"][0]  # 来自续写内容
+
+
+def test_concurrent_appends_get_distinct_positions(env):
+    pid, pm, _, _, _ = env
+
+    async def both():
+        return await asyncio.gather(pm.add_chapter(pid, "甲", "甲。"), pm.add_chapter(pid, "乙", "乙。"))
+
+    asyncio.run(both())
+    orders = [c["order_index"] for c in asyncio.run(pm.get_chapters(pid))]
+    assert len(orders) == len(set(orders)) == 5
