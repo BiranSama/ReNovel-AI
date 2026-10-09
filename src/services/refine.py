@@ -112,7 +112,9 @@ class RefinePipeline:
 
     async def review(self, request: RefineRequest, candidate: str) -> Review:
         """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
-        references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
+        # 按原文和改写一起找资料：改写里新出现（或换成）的角色也要对照档案与前文事件
+        references = await self.context.gather(request.project_id, f"{request.text}\n{candidate}",
+                                               request.chapter_index, "author")
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("原文", excerpt(request.text)),

@@ -60,14 +60,27 @@ class Services:
         await self.pm.init_db()
         await self.chapter_store.init_db()
         if self.rag.needs_migration():
-            asyncio.create_task(self.migrate_legacy_memory())
+            projects = await self.pm.get_projects()
+            self.rag.begin_rebuild(p["id"] for p in projects)  # 在页面能打开之前登记，检索和复制会等重建完
+            asyncio.create_task(self.migrate_legacy_memory(projects))
 
-    async def migrate_legacy_memory(self):
-        """旧版本的 ChromaDB 记忆：从已保存的章节正文重建到新的向量库（后台进行，不影响启动）。"""
+    async def migrate_legacy_memory(self, projects=None):
+        """旧版本的 ChromaDB 记忆：从已保存的章节正文重建到新的向量库（后台逐个项目进行，不影响启动）。
+
+        重建期间这个项目的检索和复制会等它完成，免得用到不完整的记忆，或复制出缺章节的副本。
+        """
+        if projects is None:
+            projects = await self.pm.get_projects()
+            self.rag.begin_rebuild(p["id"] for p in projects)
         Log.system("[RAG] 发现旧版本的向量记忆，正在从已保存的章节重建……")
-        for project in await self.pm.get_projects():
-            for chapter in await self.pm.get_chapters(project["id"]):
-                text = await self.pm.get_chapter_content(chapter["id"]) or ""
-                await self.rag.aindex_chapter(project["id"], chapter["id"], text)
-        self.rag.mark_migrated()
-        Log.system("[RAG] 记忆迁移完成，旧的 data/vectordb 目录可以删除")
+        try:
+            for project in projects:
+                for chapter in await self.pm.get_chapters(project["id"]):
+                    text = await self.pm.get_chapter_content(chapter["id"]) or ""
+                    await self.rag.aindex_chapter(project["id"], chapter["id"], text)
+                self.rag.finish_rebuild(project["id"])
+            self.rag.mark_migrated()
+            Log.system("[RAG] 记忆迁移完成，旧的 data/vectordb 目录可以删除")
+        finally:
+            for project in projects:  # 出错时也不能让检索、复制一直等下去
+                self.rag.finish_rebuild(project["id"])
