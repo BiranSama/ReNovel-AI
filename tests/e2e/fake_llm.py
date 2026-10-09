@@ -20,6 +20,7 @@ REWRITE_MARK = "【FAKE改写】"
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
 REJECT_ALWAYS = "【总是驳回】"  # 指令里带上它时，每次审校都给低分
 SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
+VERY_SLOW = "【很慢】"  # 请求里带上它时延迟 3 秒：后台任务完成前留出时间做界面操作
 _rejected: set[str] = set()
 
 
@@ -91,7 +92,9 @@ async def chat(req: Request):
     body = await req.json()
     messages = body["messages"]
     CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"]})
-    if SLOW in messages[-1]["content"]:
+    if VERY_SLOW in messages[-1]["content"]:
+        await asyncio.sleep(3)
+    elif SLOW in messages[-1]["content"]:
         await asyncio.sleep(1)
     text = reply_for(messages)
     created = int(time.time())

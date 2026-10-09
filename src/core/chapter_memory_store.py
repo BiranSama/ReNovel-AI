@@ -79,6 +79,11 @@ class ChapterMemoryStore:
                  json.dumps([asdict(n) for n in memory.notes], ensure_ascii=False)))
             await db.commit()
 
+    async def delete(self, chapter_id: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM chapter_memories WHERE chapter_id = ?", (chapter_id,))
+            await db.commit()
+
     async def for_project(self, project_id: str) -> dict[str, ChapterMemory]:
         """本项目各章的记忆，按章节 id 索引。"""
         async with aiosqlite.connect(self.db_path) as db:

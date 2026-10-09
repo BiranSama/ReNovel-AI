@@ -94,6 +94,9 @@ class ChapterMemoryService:
             old = memories.get(chapter["id"])
             if old and old.fingerprint == mark:
                 continue
+            if old:  # 正文改过：旧记忆说的是改之前的内容，先删掉，整理失败时改写和续写也不会再用它
+                await self.store.delete(chapter["id"])
+                del memories[chapter["id"]]
             if len(text.strip()) < MIN_CHAPTER_CHARS:
                 memory = ChapterMemory(chapter["id"])
             else:

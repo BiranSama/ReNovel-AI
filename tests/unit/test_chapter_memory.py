@@ -126,6 +126,21 @@ def test_invalid_reply_is_retried_next_time(env):
     assert asyncio.run(service(env, llm).update(pid)) == 1 and len(llm.prompts) == 1
 
 
+@pytest.mark.parametrize("failure", [{"replies": ["抱歉"]}, {"fail_after": 0}])
+def test_stale_memory_is_dropped_when_resummarizing_fails(env, failure):
+    """改过的章节重新整理失败（返回无效或调用出错）时，不再保留描述旧内容的记忆。"""
+    pm, _, pid = env
+    asyncio.run(service(env, FakeLLM()).update(pid))
+    first = asyncio.run(pm.get_chapters(pid))[1]["id"]
+    asyncio.run(pm.update_chapter_content(first, BODY + "李四其实是卧底。"))
+    try:
+        asyncio.run(service(env, FakeLLM(**failure)).update(pid))
+    except LLMError:
+        pass
+    assert dict(memories(env))["第一章 相遇"] is None  # 显示为未整理，下次重试
+    assert dict(memories(env))["第二章 拜访"].summary  # 没改的章节不受影响
+
+
 def test_llm_error_keeps_finished_chapters(env):
     with pytest.raises(LLMError):
         asyncio.run(service(env, FakeLLM(fail_after=1)).update(env[2]))

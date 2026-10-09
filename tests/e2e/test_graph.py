@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fake_llm import VERY_SLOW
 from playwright.sync_api import expect
 
 pytestmark = pytest.mark.e2e
@@ -68,3 +69,25 @@ def test_character_profiles_can_be_viewed_and_edited(page, app):
     con = sqlite3.connect(app.data_dir / "projects" / "novelforge.db")
     assert con.execute("SELECT notes FROM character_overrides WHERE name = '张三'").fetchone() == ("左撇子",)
     expect(page.locator(".character-item", has_text="张三").locator("i", has_text="edit")).to_be_visible()
+
+
+def test_open_profile_survives_background_memory_update(page, app):
+    """保存章节后后台整理记忆，完成时会重建角色列表；正在编辑的档案弹窗不能被一起关掉。"""
+    page.locator(".chapter-item", has_text="第一章").click()
+    page.wait_for_function("() => document.querySelectorAll('.segment-card').length === 6")
+    page.locator(".segment-card").first.locator("textarea").nth(1).fill(f"张三推门进来。{VERY_SLOW}")
+    page.evaluate("document.querySelectorAll('.character-item').forEach(e => e.dataset.old = '1')")
+    page.get_by_role("button", name="保存").click()  # 这一章的记忆整理要 3 秒
+
+    page.locator(".character-item", has_text="张三").click()
+    dialog = page.locator(".character-dialog")
+    notes = dialog.get_by_label("备注（改写和审校时会参考）")
+    notes.fill("还没保存的备注")
+    assert page.locator(".character-item[data-old]").count(), "弹窗打开前记忆就整理完了，测不到刷新"
+    page.wait_for_function(  # 记忆整理完，角色列表已重建
+        "() => document.querySelector('.character-item') && !document.querySelector('.character-item[data-old]')",
+        timeout=20000)
+    expect(dialog).to_be_visible()
+    expect(notes).to_have_value("还没保存的备注")
+    dialog.get_by_role("button", name="取消").click()
+    expect(dialog).to_be_hidden()
