@@ -142,6 +142,28 @@ def test_legacy_chroma_data_is_rebuilt_from_saved_chapters(tmp_path, monkeypatch
     assert not services.rag.needs_migration()  # 只迁移一次
 
 
+def test_search_and_backup_wait_until_the_project_is_rebuilt(tmp_path, monkeypatch):
+    """升级后第一次启动在后台重建旧记忆：重建完之前，这个项目的检索和复制等着，不用不完整的记忆。"""
+    monkeypatch.setenv("RENOVEL_DATA_DIR", str(tmp_path))
+    services = Services()
+    services.rag = RAGEngine(embedder=CharEmbedder())
+
+    async def run():
+        await services.pm.init_db()
+        pid = await services.pm.create_project("书")
+        await services.pm.import_content(pid, "第一章 开端\n" + "\n".join(LINES) + "\n")
+        projects = await services.pm.get_projects()
+        services.rag.begin_rebuild(p["id"] for p in projects)
+        migration = asyncio.create_task(services.migrate_legacy_memory(projects))
+        found = await services.rag.asearch("李四坐在窗边", pid, n_results=1)
+        await services.rag.aclone_project_memory(pid, "copy")
+        await migration
+        return found, services.rag.store.count("copy"), services.rag.store.count(pid)
+
+    found, copied, total = asyncio.run(run())
+    assert found == [LINES[1]] and copied == total == 3
+
+
 def test_async_api_keeps_event_loop_responsive(rag, monkeypatch):
     """检索很慢（如首次下载向量模型）时，事件循环仍能处理其他任务，界面不会卡住。"""
     monkeypatch.setattr(rag, "search", lambda *args: time.sleep(0.5) or ["结果"])

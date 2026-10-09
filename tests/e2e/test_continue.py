@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from fake_llm import CONTINUE_MARK, CONTINUE_TEXT, VERY_SLOW
+from fake_llm import CONTINUE_MARK, CONTINUE_TEXT, UNREADABLE_REVIEW, VERY_SLOW
 
 pytestmark = pytest.mark.e2e
 
@@ -104,3 +104,15 @@ def test_changing_the_target_while_generating_blocks_adoption(page, app):
     expect(dialog.get_by_role("button", name="采纳")).to_be_disabled()
     dialog.get_by_role("button", name="关闭").click()
     assert db(app).execute("SELECT COUNT(*) FROM chapters").fetchone()[0] == chapters
+
+
+def test_a_new_draft_does_not_show_the_previous_score(page):
+    """上一稿审校 9 分；下一稿审校没给出分数时，不能还显示上一稿的分数。"""
+    dialog = open_dialog(page)
+    dialog.get_by_role("button", name="生成").click()
+    expect(dialog.locator(".continue-review")).to_have_text("审校 9 分")
+    dialog.get_by_label("大纲 / 走向（可选）").fill(f"两人告别{UNREADABLE_REVIEW}")
+    dialog.get_by_role("button", name="生成").click()
+    expect(dialog.locator(".continue-review")).to_have_text("审校未完成")
+    dialog.get_by_role("button", name="关闭").click()
+

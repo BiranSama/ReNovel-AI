@@ -23,7 +23,10 @@ class StylePanel:
 
     async def refresh(self):
         pid = self.session.state.current_project_id
-        self.profile = await self.session.services.style.get(pid) if pid else StyleProfile()
+        profile = await self.session.services.style.get(pid) if pid else StyleProfile()
+        if pid != self.session.state.current_project_id:  # 读取期间又切换了项目：以后一次刷新为准
+            return
+        self.profile = profile
         self._render()
 
     def _render(self):

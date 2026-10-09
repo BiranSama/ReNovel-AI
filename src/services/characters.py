@@ -91,10 +91,13 @@ def build_profiles(chapters: list[dict], memories: dict[str, ChapterMemory],
 
     profiles, canonical_of = {}, {}
     for members in groups.members().values():
-        edited = [m for m in members if m in overrides]
-        # 用户修订过的名字优先；否则取出场最多、最早出现的称呼
-        name = edited[0] if edited else min(members, key=lambda m: (-mentions[m], first_seen.get(m, 1 << 30)))
-        override = overrides.get(name, CharacterOverride(name))
+        edited = sorted((m for m in members if m in overrides), key=lambda m: first_seen.get(m, 1 << 30))
+        # 用户修订过的名字优先（几个都修订过时，取把别的称呼加为别名、促成合并的那一个）；
+        # 否则取出场最多、最早出现的称呼
+        merging = [m for m in edited if any(a in members and a != m for a in overrides[m].aliases)]
+        name = (merging or edited)[0] if edited else \
+            min(members, key=lambda m: (-mentions[m], first_seen.get(m, 1 << 30)))
+        override = _merged_override(name, [overrides[m] for m in edited])
         aliases = [a for a in sorted(members, key=lambda m: first_seen.get(m, 1 << 30)) if a != name]
         aliases += [a for a in override.aliases if a not in aliases and a != name]
         profiles[name] = CharacterProfile(name, aliases, manual_traits=override.traits, notes=override.notes,
@@ -118,6 +121,20 @@ def build_profiles(chapters: list[dict], memories: dict[str, ChapterMemory],
 
     listed = [p for p in profiles.values() if include_hidden or not p.hidden]
     return sorted(listed, key=lambda p: (p.hidden, -len(p.chapters), first_seen.get(p.name, 1 << 30)))
+
+
+def _merged_override(name: str, edited: list[CharacterOverride]) -> CharacterOverride:
+    """合并成一个角色的几份修订：以 name 那份为准，其他几份的性格、备注接在后面，不丢手动填写的内容。"""
+    main = next((o for o in edited if o.name == name), CharacterOverride(name))
+    traits, notes = main.traits, main.notes
+    for other in edited:
+        if other is main:
+            continue
+        if other.traits and other.traits not in traits:
+            traits = "；".join(t for t in (traits, other.traits) if t)
+        if other.notes and other.notes not in notes:
+            notes = "；".join(n for n in (notes, other.notes) if n)
+    return CharacterOverride(name, main.aliases, traits, notes, main.hidden)
 
 
 def mentioned(profiles: list[CharacterProfile], text: str) -> list[CharacterProfile]:

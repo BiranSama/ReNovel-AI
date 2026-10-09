@@ -44,6 +44,9 @@ async def open_continue_dialog(session, editor):
         async def generate():
             generate_button.props('loading'); adopt_button.disable()
             draft['request'], target = None, draft['target']
+            result_label.text = ''  # 清掉上一稿的分数
+            if conf['mode'] == 'chapter' and session.has_unsaved_changes():
+                ui.notify('当前章节有未保存的修改：续写新章节参考的是已保存的正文，建议先保存', type='warning')
             request = await session.continue_request(conf['mode'], conf['after'], conf['outline'],
                                                      conf['length'], conf['title'])
 
@@ -68,6 +71,8 @@ async def open_continue_dialog(session, editor):
             if review and review.score is not None:
                 result_label.text = f'审校 {review.score:g} 分' + \
                     (f' · 文风 {review.style_score:g}' if review.style_score is not None else '')
+            elif review:  # 审校调用失败或返回无法解析
+                result_label.text = '审校未完成' + (f'：{review.error}' if review.error else '')
             adopt_button.enable()
 
         async def adopt():
@@ -75,7 +80,7 @@ async def open_continue_dialog(session, editor):
             if not text or not request: return ui.notify('请先生成草稿', type='warning')
             adopt_button.props('loading')
             try:
-                await session.adopt_continuation(request, text, conf['title'])
+                cid = await session.adopt_continuation(request, text, conf['title'])
             except ValueError as e:
                 return ui.notify(str(e), type='warning')
             finally:
@@ -83,7 +88,8 @@ async def open_continue_dialog(session, editor):
             dialog.close()
             if request.mode == 'chapter':
                 await session.refresh_chapter_list()
-            ui.notify('已采纳续写，正在更新记忆')
+            if cid:
+                ui.notify('已采纳续写，正在更新记忆')
 
         with ui.row().classes('w-full justify-end'):
             ui.button('关闭', on_click=dialog.close).props('flat')

@@ -97,8 +97,10 @@ class ContinuationService:
 
         async def review(candidate: str):
             style = snapshot.get("style")
-            # 审校的资料按续写内容检索（放在最前面，向量检索只看开头）：续写里新出场的角色也要对照档案
-            author = await context.gather(request.project_id, f"{candidate.strip()[:QUERY_CHARS]}\n{query}",
+            # 审校的资料按续写内容检索：开头放在最前面（向量检索只看开头），整篇续写都用来找出场角色与关系，
+            # 续写后半段才出场的角色也要对照档案
+            draft = candidate.strip()
+            author = await context.gather(request.project_id, f"{draft[:QUERY_CHARS]}\n{query}\n{draft[QUERY_CHARS:]}",
                                           request.chapter_index, "author")
             return await self.pipeline.ask_reviewer(join_sections(
                 section("设定资料（作者视角）", author),

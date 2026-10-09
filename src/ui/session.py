@@ -217,6 +217,7 @@ class Session:
         c = await self.services.pm.get_chapter_content(cid)
         if c is not None:  # 空章节（内容被清空并保存）也要能选中
             self.state.current_chapter_id = cid
+            self.state.saved_text = c
             self.state.segments = split_text(c)
             self.state.full_text_draft = segments.merge(self.state.segments)  # 同步全文草稿
             self.state.full_text_history = []
@@ -261,11 +262,22 @@ class Session:
         if self.state.view_mode == 'full':
             self.state.segments = split_text(self.state.full_text_draft or "")
             self._render()
+        await self._save_segments()
 
+    async def _save_segments(self) -> bool:
+        """保存当前各段生效的文字，返回是否保存了。"""
         txt = self.merge_text()
         pid, cid = self.state.current_project_id, self.state.current_chapter_id
         if cid:
-            await self.services.pm.update_chapter_content(cid, txt)
+            # 只在数据库里还是打开时的内容时写入：这期间另一个标签页或批量改写保存过这一章，先问是否覆盖
+            if not await self.services.pm.update_chapter_content(cid, txt, expected=self.state.saved_text):
+                if not await self._confirm_overwrite():
+                    ui.notify('未保存。重新打开这一章可以看到别处保存的内容（当前的修改请先复制出来）',
+                              type='warning', multi_line=True)
+                    return False
+                await self.services.pm.update_chapter_content(cid, txt)
+            if self.state.current_chapter_id == cid:
+                self.state.saved_text = txt
             if pid:
                 await self.services.rag.aindex_chapter(pid, cid, txt)
                 # 已整理过记忆 / 建立了图谱的项目：后台分析这一章的新内容（内容没变时不会调用模型）。
@@ -276,6 +288,14 @@ class Session:
                 if engine and engine.is_built():
                     asyncio.create_task(self.bg_build_graph(pid, {cid}))
             ui.notify('✅ 已保存（记忆已更新）')
+        return bool(cid)
+
+    def has_unsaved_changes(self) -> bool:
+        """编辑器里的内容和打开（或上次保存）这一章时数据库里的正文不一样（忽略段落格式的差别）。"""
+        state = self.state
+        if not state.current_chapter_id or state.saved_text is None:
+            return False
+        return segments.merge(self.working_segments()) != segments.merge(split_text(state.saved_text))
 
     async def chapter_versions(self):
         if not self.state.current_chapter_id: return []
@@ -288,6 +308,17 @@ class Session:
         self.state.full_text_history = []
         self._render()
         ui.notify('已恢复到编辑器，点「保存」后生效')
+
+    @staticmethod
+    async def _confirm_overwrite() -> bool:
+        with ui.dialog() as d, ui.card().classes('overwrite-dialog'):
+            ui.label('这一章在别处被修改过').classes('font-bold')
+            ui.label('打开这一章之后，另一个标签页或批量改写保存过它。覆盖保存会用当前编辑器里的内容替换那些修改。') \
+                .classes('text-sm text-gray-500')
+            with ui.row().classes('w-full justify-end'):
+                ui.button('取消', on_click=lambda: d.submit(False)).props('flat')
+                ui.button('覆盖保存', on_click=lambda: d.submit(True)).props('color=red')
+        return bool(await d)
 
     # ==========================
     # 4. 文件处理
@@ -451,21 +482,28 @@ class Session:
         if request.mode == 'chapter':
             cid = await self.services.continuation.adopt_chapter(request, title or request.title, draft)
             if state.current_project_id == pid:
-                await self.load_chapter(cid)
+                if self.has_unsaved_changes():  # 不切到新章节：会丢掉当前章节没保存的修改
+                    ui.notify('新章节已追加到全书末尾。当前章节有未保存的修改，保存后再到左侧打开新章节',
+                              type='warning', multi_line=True)
+                else:
+                    await self.load_chapter(cid)
         else:
             cid = request.chapter_id
             if state.current_project_id != pid or state.current_chapter_id != cid:
                 raise ValueError('当前打开的不是生成草稿时的章节，请回到那一章或重新生成')
             current = self.working_segments()
-            if segments.merge(current[:request.after]) != request.preceding:
-                raise ValueError('生成草稿后，续写位置之前的正文有改动，请重新生成')
+            if (segments.merge(current[:request.after]), segments.merge(current[request.after:])) != \
+                    (request.preceding, request.following):
+                raise ValueError('生成草稿后，续写位置前后的正文有改动，请重新生成')
             state.segments = current  # 全文工作台：保存时本来就以草稿为准重新分段
             # 插入为“空原文 + 已采纳的候选”：保存时写入，点撤销即可去掉这一段
             lines = [seg['original'] for seg in split_text(draft)]
             state.segments[request.after:request.after] = [segments.new_segment("", line) for line in lines]
-            state.full_text_draft = segments.merge(state.segments)  # 全文工作台里保存时以草稿为准
+            state.full_text_draft = segments.merge(state.segments)  # 全文工作台里显示的草稿同步
             self._render()
-            await self.save_all()
+            # 直接保存准备好的段落，不再按全文重新分段：插入的段落保留「候选」身份，回到分段模式也能撤销
+            if not await self._save_segments():
+                return None  # 别处保存过这一章、用户选择不覆盖：续写已放进编辑器，没有保存
         asyncio.create_task(self.bg_update_memory(pid, {cid}))
         engine = self.services.graphs.get(pid)
         if engine and engine.is_built():

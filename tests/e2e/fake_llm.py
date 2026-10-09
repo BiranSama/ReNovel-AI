@@ -22,6 +22,7 @@ CONTINUE_TEXT = "张三与李四在门口告别，约定明日再见。\n第二�
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
 REJECT_ALWAYS = "【总是驳回】"  # 指令里带上它时，每次审校都给低分
 SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
+UNREADABLE_REVIEW = "【审校看不懂】"  # 请求里带上它时，审校返回无法解析的内容
 VERY_SLOW = "【很慢】"  # 请求里带上它时延迟 3 秒：后台任务完成前留出时间做界面操作
 _rejected: set[str] = set()
 
@@ -48,6 +49,8 @@ def reply_for(messages: list[dict]) -> str:
                            "hooks": [f"{title}里李四欲言又止"]},
                           ensure_ascii=False)
     if "评分" in user:  # Reviewer 打分
+        if UNREADABLE_REVIEW in user:
+            return "抱歉，这次没法打分。"
         if REJECT_ALWAYS in user:
             return json.dumps({"score": 2, "suggestion": "节奏太慢"}, ensure_ascii=False)
         if REJECT_ONCE in user and REJECT_ONCE not in _rejected:

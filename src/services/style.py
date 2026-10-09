@@ -10,7 +10,8 @@ from src.llm.prompts import assemble_system_prompt, join_sections, parse_json_ob
 
 CANDIDATE_PARAGRAPHS = 12   # 交给模型挑选的候选段落数
 MIN_PARAGRAPH_CHARS = 20    # 太短的段落（如单句对白）不足以体现文风
-MAX_PARAGRAPH_CHARS = 400
+MAX_PARAGRAPH_CHARS = 400   # 更长的段落截到这个长度以内的句末（有的 TXT 一章只有一行）
+SENTENCE_ENDS = "。！？!?…”」"
 MAX_SAMPLES = 3
 EXTRACT_INSTRUCTION = (
     "请提炼这本书的文风：从叙述视角、句式长短、用词、修辞、对白与描写的比例、节奏几个方面写出 200 字以内的风格描述，"
@@ -61,10 +62,19 @@ def preset_profile(name: str) -> StyleProfile:
     return StyleProfile(preset.description, list(preset.samples), f"预设：{preset.name}")
 
 
+def trim_paragraph(paragraph: str) -> str:
+    """过长的段落只取开头，尽量截在句末。"""
+    if len(paragraph) <= MAX_PARAGRAPH_CHARS:
+        return paragraph
+    head = paragraph[:MAX_PARAGRAPH_CHARS]
+    cut = max(head.rfind(mark) for mark in SENTENCE_ENDS)
+    return head[:cut + 1] if cut + 1 >= MIN_PARAGRAPH_CHARS else head
+
+
 def pick_candidates(texts: list[str], limit: int = CANDIDATE_PARAGRAPHS) -> list[str]:
-    """从各章正文里均匀抽取长度合适的段落。"""
-    paragraphs = [p.strip() for text in texts for p in (text or "").split("\n")
-                  if MIN_PARAGRAPH_CHARS <= len(p.strip()) <= MAX_PARAGRAPH_CHARS]
+    """从各章正文里均匀抽取段落（太短的不要，太长的截短）。"""
+    paragraphs = [trim_paragraph(p.strip()) for text in texts for p in (text or "").split("\n")
+                  if len(p.strip()) >= MIN_PARAGRAPH_CHARS]
     if len(paragraphs) <= limit:
         return paragraphs
     step = len(paragraphs) / limit
@@ -92,7 +102,11 @@ class StyleService:
         return profile
 
     async def extract(self, project_id: str) -> StyleProfile:
-        """从已保存的正文提炼文风档案并保存。模型调用失败抛 LLMError，提炼不出来抛 StyleExtractError。"""
+        """从已保存的正文提炼文风档案并保存。模型调用失败抛 LLMError，提炼不出来抛 StyleExtractError。
+
+        提炼要等模型较长时间：期间档案被改过（套用预设、手动保存）就不覆盖，以后来的操作为准。
+        """
+        before = await self.store.get(project_id)
         chapters = await self.projects.get_chapters(project_id)
         texts = [await self.projects.get_chapter_content(c["id"]) or "" for c in chapters]
         candidates = pick_candidates(texts)
@@ -118,5 +132,7 @@ class StyleService:
             if 1 <= number <= len(candidates) and candidates[number - 1] not in samples:
                 samples.append(candidates[number - 1])
         profile = StyleProfile(description, samples[:MAX_SAMPLES] or candidates[:2], "提炼自原文")
+        if await self.store.get(project_id) != before:
+            raise StyleExtractError("提炼期间文风档案被修改过（套用了预设或手动保存），提炼结果没有覆盖它")
         await self.store.save(project_id, profile)
         return profile

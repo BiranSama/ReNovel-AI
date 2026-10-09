@@ -33,6 +33,7 @@ class RAGEngine:
         # 嵌入计算和数据库读写都是阻塞调用（首次还要下载模型）：放到一个专用线程里依次执行，
         # 界面的事件循环不会被卡住；单线程也避免多个标签页同时写入
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag")
+        self._rebuilding: dict[str, asyncio.Event] = {}  # 正在从旧数据重建记忆的项目
 
     def embedder(self) -> Embedder:
         if self._fixed:
@@ -48,13 +49,30 @@ class RAGEngine:
         return await asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
 
     async def asearch(self, query: str, project_id: str, n_results=5, chapter_ids=None) -> list[str]:
+        await self._wait_rebuilt(project_id)
         return await self._in_thread(self.search, query, project_id, n_results, chapter_ids)
 
     async def aindex_chapter(self, project_id: str, chapter_id: str, text: str):
         return await self._in_thread(self.index_chapter, project_id, chapter_id, text)
 
     async def aclone_project_memory(self, old_pid: str, new_pid: str, chapter_map: Optional[dict] = None):
+        await self._wait_rebuilt(old_pid)  # 否则副本只复制到已经重建的部分，之后也不会补上
         return await self._in_thread(self.clone_project_memory, old_pid, new_pid, chapter_map)
+
+    # --- 从旧数据重建期间：检索和复制等这个项目重建完（重建只在升级后第一次启动时进行一次）---
+    def begin_rebuild(self, project_ids: Iterable[str]) -> None:
+        for project_id in project_ids:
+            self._rebuilding[project_id] = asyncio.Event()
+
+    def finish_rebuild(self, project_id: str) -> None:
+        event = self._rebuilding.pop(project_id, None)
+        if event:
+            event.set()
+
+    async def _wait_rebuilt(self, project_id: str) -> None:
+        event = self._rebuilding.get(project_id)
+        if event:
+            await event.wait()
 
     # --- 同步实现 ---
     def index_chapter(self, project_id: str, chapter_id: str, text: str) -> None:
