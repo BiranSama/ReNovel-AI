@@ -133,3 +133,39 @@ def test_edited_profile_takes_effect_on_next_rewrite(env):
     refine(env, llm)
     assert "旧文风" in llm.prompts["writer"][0]
     assert "【文风要求】\n新文风：全部用短句。" in llm.prompts["writer"][1] and "旧文风" not in llm.prompts["writer"][1]
+
+
+def test_non_list_samples_fall_back_to_default_paragraphs(env):
+    pm, store, pid = env
+    llm = FakeLLM(reply='{"description": "冷静。", "samples": 1}')
+    profile = asyncio.run(StyleService(llm, AppSettings(Config()), pm, store).extract(pid))
+    assert profile.description == "冷静。" and len(profile.samples) == 2
+
+
+def test_saving_keeps_at_most_three_samples(env):
+    pm, store, pid = env
+    service = StyleService(FakeLLM(), AppSettings(Config()), pm, store)
+    asyncio.run(service.save(pid, StyleProfile("描述", ["一", "", "二", "三", "四"], "手动")))
+    assert asyncio.run(store.get(pid)).samples == ["一", "二", "三"]
+
+
+def test_each_retry_writes_and_reviews_with_the_same_fresh_profile(env):
+    """重试期间档案被修改：下一稿按新档案写，也按新档案审。"""
+    _, store, pid = env
+    asyncio.run(store.save(pid, StyleProfile("旧文风。", [], "手动")))
+
+    class EditingLLM(FakeLLM):
+        async def complete(self, config, messages):
+            prompt = messages[-1]["content"]
+            self.prompts.setdefault(config["model"], []).append(prompt)
+            if len(self.prompts["reviewer"]) == 1:  # 第一次审校时，档案在另一个标签页被改了
+                await store.save(pid, StyleProfile("新文风。", [], "手动"))
+                return json.dumps({"score": 3, "suggestion": "改"})
+            return json.dumps({"score": 9, "suggestion": "好"})
+
+    llm = EditingLLM()
+    pipeline = RefinePipeline(llm, AppSettings(Config()), ContextBuilder(None), styles=store)
+    pipeline.settings.config["review_mode"] = "auto"
+    asyncio.run(pipeline.refine(RefineRequest(text="原文。", instruction="润色", project_id=pid)))
+    assert "旧文风" in llm.prompts["writer"][0] and "旧文风" in llm.prompts["reviewer"][0]
+    assert "新文风" in llm.prompts["writer"][1] and "新文风" in llm.prompts["reviewer"][1]

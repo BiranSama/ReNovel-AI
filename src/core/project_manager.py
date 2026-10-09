@@ -110,6 +110,8 @@ class ProjectManager:
         """在全书末尾新增一章，返回章节 id。"""
         chapter_id = str(uuid.uuid4())
         async with aiosqlite.connect(self.db_path) as db:
+            # 独占事务：多个标签页同时追加章节时依次分配位置，不会得到相同的 order_index
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM chapters WHERE project_id = ?",
                                       (project_id,))
             order_index = (await cursor.fetchone())[0]
