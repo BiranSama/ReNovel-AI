@@ -107,3 +107,11 @@ def test_saving_only_writes_fields_changed_in_this_dialog():
 
     assert settings.config["writer"]["model"] == "deepseek-chat"
     assert settings.config["review_mode"] == "auto"
+
+
+def test_default_model_matches_the_preselected_preset():
+    """全新安装时首次启动引导预选的服务（按默认 Base URL 识别）与默认模型一致，只填 Key 就能用推荐模型。"""
+    from src.llm.presets import find_preset
+
+    writer = AppSettings(MemoryConfig()).config["writer"]
+    assert writer["model"] == find_preset(detect_preset(writer)).model

@@ -1,0 +1,37 @@
+name: build-exe
+
+# 在 Windows 上打包绿色版（解压即用，数据保存在程序旁边的 data 目录），
+# 启动自检通过后把程序目录作为工作流附件上传（不发布 Release）
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: 安装依赖
+        run: pip install -r requirements-build.txt
+      - name: 打包
+        run: nicegui-pack --onedir --noconfirm --name ReNovel main.py
+      - name: 启动自检
+        env:
+          PYTHONUTF8: "1"  # 自检脚本的输出含中文，runner 控制台默认是 cp1252
+        run: python scripts/self_test.py dist/ReNovel/ReNovel.exe
+      - name: 附带说明
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE dist/ReNovel/
+          Copy-Item docs/使用说明.txt dist/ReNovel/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReNovel-windows
+          path: dist/ReNovel
+          retention-days: 30

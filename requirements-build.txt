@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# 打包 exe（nicegui-pack 调用 PyInstaller）
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
