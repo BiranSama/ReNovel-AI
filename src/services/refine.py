@@ -179,7 +179,9 @@ class RefinePipeline:
 
         style 为写这一稿时用的文风档案；不传时读取当前的档案。
         """
-        references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
+        # 按原文和改写一起找资料：改写里新出现（或换成）的角色也要对照档案与前文事件
+        references = await self.context.gather(request.project_id, f"{request.text}\n{candidate}",
+                                               request.chapter_index, "author")
         if style is _LOAD:
             style = await self.style_for(request.project_id)
         prompt = join_sections(

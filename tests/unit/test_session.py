@@ -70,8 +70,9 @@ class FakeProjects:
     def __init__(self):
         self.saved = {}
 
-    async def update_chapter_content(self, cid, text):
+    async def update_chapter_content(self, cid, text, expected=None):
         self.saved[cid] = text
+        return True
 
 
 class FakeRag:

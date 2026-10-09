@@ -51,6 +51,18 @@ def test_overrides_win_and_can_merge_or_hide():
     assert "第4章" not in profiles
 
 
+def test_merging_two_edited_profiles_keeps_both_manual_notes():
+    """张三和李四都填过备注，之后把张三加为李四的别名：以加别名的李四为名，两边的手动内容都保留。"""
+    overrides = {
+        "张三": CharacterOverride("张三", traits="念旧", notes="左撇子"),
+        "李四": CharacterOverride("李四", ["张三"], notes="爱喝茶"),
+    }
+    profiles = by_name(build_profiles(CHAPTERS, memories(), overrides))
+    li = profiles["李四"]
+    assert "张三" not in profiles and "张三" in li.aliases
+    assert (li.notes, li.manual_traits) == ("爱喝茶；左撇子", "念旧")
+
+
 def test_mentioned_matches_aliases():
     profiles = build_profiles(CHAPTERS, memories(), {})
     assert [p.name for p in mentioned(profiles, "三哥推门而入")] == ["张三"]
