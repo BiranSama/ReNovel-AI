@@ -92,6 +92,16 @@ def test_extract_errors(env, tmp_path):
         asyncio.run(StyleService(FakeLLM(), AppSettings(Config()), pm, store).extract(asyncio.run(tiny_book())))
 
 
+@pytest.mark.parametrize("description", [{"视角": "第三人称", "句式": "短句"}, ["短句"], 3])
+def test_non_string_description_is_rejected(env, description):
+    """模型把描述写成对象或列表时算提炼失败，不把 Python 的表示形式存进档案、带进每次改写。"""
+    pm, store, pid = env
+    reply = json.dumps({"description": description, "samples": [1]}, ensure_ascii=False)
+    with pytest.raises(StyleExtractError, match="有效的风格描述"):
+        asyncio.run(StyleService(FakeLLM(reply=reply), AppSettings(Config()), pm, store).extract(pid))
+    assert asyncio.run(store.get(pid)) is None
+
+
 def test_presets_can_be_applied(env):
     pm, store, pid = env
     assert PRESET_NAMES == ["白描", "古风", "轻小说"]

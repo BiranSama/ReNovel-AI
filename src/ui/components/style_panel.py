@@ -65,10 +65,15 @@ class StylePanel:
         if not pid:
             event.sender.value = None
             return ui.notify('请先打开项目', type='warning')
-        self.profile = await self.session.services.style.apply_preset(pid, event.value)
+        name = event.value
+        profile = await self.session.services.style.apply_preset(pid, name)
         event.sender.value = None
+        if pid != self.session.state.current_project_id:  # 套用期间切换了项目：已存到原项目，面板显示当前项目
+            await self.refresh()
+            return ui.notify(f'已把「{name}」文风套用到原来的项目')
+        self.profile = profile
         self._render()
-        ui.notify(f'已套用「{self.profile.source.removeprefix("预设：")}」文风')
+        ui.notify(f'已套用「{name}」文风')
 
     async def extract(self):
         pid = self.session.state.current_project_id
