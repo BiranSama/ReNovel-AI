@@ -36,6 +36,10 @@ class GraphStore:
             self._engines[project_id] = GraphEngine(project_id)
         return self._engines[project_id]
 
+    def forget(self, project_id) -> None:
+        """丢掉缓存的引擎，下次使用时重新读取图谱文件（例如复制项目时图谱文件是后写入的）。"""
+        self._engines.pop(project_id, None)
+
 
 class Services:
     def __init__(self):
@@ -53,7 +57,8 @@ class Services:
         self.graph = GraphService(self.llm, self.settings, self.pm)
         self.chapter_memory = ChapterMemoryService(self.llm, self.settings, self.pm, self.chapter_store)
         self.characters = CharacterService(self.pm, self.chapter_store, self.graphs.get)
-        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store, self.chapter_memory)
+        self.batch = BatchService(self.pm, self.refine, self.rag, self.chapter_store,
+                                  chapter_memory=self.chapter_memory, graphs=self.graphs)
 
     async def init_db(self):
         """在 app.on_startup 时调用"""

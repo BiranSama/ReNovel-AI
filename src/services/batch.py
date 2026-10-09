@@ -54,12 +54,13 @@ class BatchOutcome:
 
 
 class BatchService:
-    def __init__(self, projects, refine, memory=None, chapter_store=None, chapter_memory=None):
+    def __init__(self, projects, refine, memory=None, chapter_store=None, chapter_memory=None, graphs=None):
         self.projects = projects            # ProjectManager
         self.refine = refine                # RefinePipeline
         self.memory = memory                # RAGEngine，可选
         self.chapter_store = chapter_store  # ChapterMemoryStore，可选
         self.chapter_memory = chapter_memory  # ChapterMemoryService，可选：每章改写后更新它的章节记忆
+        self.graphs = graphs                # GraphStore，可选：复制图谱后让副本重新读取
         self._running: set[str] = set()     # 正在批量改写的项目（所有标签页共享）
 
     def is_running(self, project_id: str) -> bool:
@@ -76,6 +77,8 @@ class BatchService:
         if self.chapter_store:
             await self.chapter_store.clone(project_id, backup_id, mapping)
         clone_graph(project_id, backup_id, mapping)
+        if self.graphs:  # 复制完成前另一个标签页可能已打开副本、缓存了空图谱
+            self.graphs.forget(backup_id)
         return backup_id, mapping
 
     async def remaining_chapters(self, project_id: str) -> list[dict]:

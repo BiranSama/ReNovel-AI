@@ -69,3 +69,33 @@ def test_two_tabs_do_not_interfere(browser, app):
 
     tab_a.close()
     tab_b.close()
+
+
+def test_saving_over_another_tabs_save_asks_first(browser, app):
+    """两个标签页打开同一章：后保存的不会悄悄覆盖先保存的修改，先问是否覆盖。"""
+    tab_a, tab_b = open_tab(browser, app), open_tab(browser, app)
+    for tab in (tab_a, tab_b):
+        tab.locator(".chapter-item").nth(5).wait_for()
+        open_chapter(tab, "第二章", "（2-1）")
+
+    for tab in (tab_a, tab_b):
+        tab.get_by_role("button", name="全文工作台").click()
+    tab_a.locator(".full-height-textarea textarea").nth(1).fill("A 改的第一段。")
+    tab_a.get_by_role("button", name="保存").click()
+    tab_a.get_by_text("已保存").wait_for()
+    assert chapter_content(app, "第二章").startswith("A 改的第一段。")
+
+    tab_b.locator(".full-height-textarea textarea").nth(1).fill("B 改的第一段。")
+    tab_b.get_by_role("button", name="保存").click()
+    dialog = tab_b.locator(".overwrite-dialog")
+    dialog.get_by_role("button", name="取消").click()
+    expect(dialog).to_be_hidden()
+    assert chapter_content(app, "第二章").startswith("A 改的第一段。")  # 没有覆盖
+
+    tab_b.get_by_role("button", name="保存").click()
+    dialog.get_by_role("button", name="覆盖保存").click()
+    tab_b.get_by_text("已保存").wait_for()
+    assert chapter_content(app, "第二章").startswith("B 改的第一段。")
+
+    tab_a.close()
+    tab_b.close()
