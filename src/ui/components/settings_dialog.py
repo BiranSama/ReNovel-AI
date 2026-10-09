@@ -2,9 +2,12 @@
 
 界面编辑的是设置的副本，点「保存配置」才生效；关闭弹窗不保存则丢弃修改。
 """
+import asyncio
 import copy
 
 from nicegui import ui
+
+from src.ai.embeddings import API_PRESETS, MIRRORS, EmbeddingError, check_embedder
 
 from src.core.settings import DEFAULT_BLOCKS, REVIEW_MODES, AppSettings, assign, inherits_writer, resolve_role
 from src.llm import LLMError
@@ -13,17 +16,20 @@ from src.llm.presets import CUSTOM, PRESET_NAMES, apply_preset, detect_preset, f
 ROLES = [
     ('writer', 'Writer (作家)', 'edit_note'),
     ('analyzer', 'Analyzer (军师)', 'psychology'),
+    ('memory', 'Memory (章节记忆)', 'auto_stories'),
     ('graph', 'Graph (图谱)', 'hub'),
     ('reviewer', 'Reviewer (总监)', 'gavel'),
     ('chat', 'Chat (助手)', 'chat'),
 ]
 PROVIDERS = {'openai': 'OpenAI 兼容', 'google': 'Gemini'}
+EMBEDDING_SOURCES = {'local': '本地模型（首次使用时下载，约 25MB，之后离线可用）', 'api': '调用 API（/embeddings 接口）'}
 
 
 class SettingsDialog:
-    def __init__(self, settings: AppSettings, llm):
+    def __init__(self, settings: AppSettings, llm, rag=None):
         self.settings = settings
         self.llm = llm
+        self.rag = rag  # 用于显示最近一次向量生成失败的原因
         self.config = settings.draft()  # 界面绑定的是副本
         self.baseline = settings.draft()  # 打开弹窗时的设置，保存时只写入改过的项
         self.preset_selects = {}
@@ -35,6 +41,7 @@ class SettingsDialog:
         self.baseline = self.settings.draft()
         for role_key, select in self.preset_selects.items():
             select.value = detect_preset(self.config[role_key])
+        self.memory_status.refresh()
         self.dialog.open()
 
     def create_ui(self):
@@ -45,6 +52,7 @@ class SettingsDialog:
 
             with ui.tabs().classes('w-full text-gray-700') as tabs:
                 tab_items = {key: ui.tab(label, icon=icon) for key, label, icon in ROLES}
+                memory_tab = ui.tab('记忆 (向量)', icon='memory')
 
             with ui.tab_panels(tabs, value=tab_items['writer']).classes('w-full flex-grow'):
                 for role_key, _, _ in ROLES:
@@ -52,6 +60,8 @@ class SettingsDialog:
                         if role_key == 'reviewer':
                             self._render_review_options()
                         self._render_role_panel(role_key)
+                with ui.tab_panel(memory_tab).classes('memory-settings'):
+                    self._render_memory_panel()
 
             with ui.row().classes('w-full justify-between pt-4 border-t items-center'):
                 ui.switch('NSFW 模式').bind_value(self.config, 'enable_nsfw_mode').props('color=red')
@@ -65,6 +75,46 @@ class SettingsDialog:
                 .bind_value(self.config, 'review_threshold').classes('w-36')
             ui.number('最多重试次数', min=0, max=5, step=1, precision=0) \
                 .bind_value(self.config, 'max_review_retries').classes('w-32')
+
+    def _render_memory_panel(self):
+        conf = self.config['embedding']
+        ui.label('向量记忆用于按语义检索前文：改写、审校、聊天时自动带上相关的设定和情节。').classes('text-sm text-gray-600')
+        ui.radio(EMBEDDING_SOURCES).bind_value(conf, 'provider')
+        with ui.column().classes('w-1/2 gap-2').bind_visibility_from(conf, 'provider', value='local'):
+            ui.input('下载镜像', autocomplete=list(MIRRORS)).bind_value(conf, 'mirror').classes('w-full') \
+                .tooltip('国内建议 https://hf-mirror.com；也可填官方 https://huggingface.co 或其他镜像')
+            ui.input('模型（Hugging Face 仓库）').bind_value(conf, 'local_model').classes('w-full')
+        with ui.column().classes('w-1/2 gap-2').bind_visibility_from(conf, 'provider', value='api'):
+            with ui.row().classes('gap-2'):
+                for name, base_url, model in API_PRESETS:
+                    ui.button(name, on_click=lambda b=base_url, m=model: conf.update(base_url=b, model=m)) \
+                        .props('outline dense size=sm color=indigo')
+            ui.input('Base URL').bind_value(conf, 'base_url').classes('w-full')
+            ui.input('API Key', password=True, password_toggle_button=True).bind_value(conf, 'api_key').classes('w-full')
+            ui.input('Model').bind_value(conf, 'model').classes('w-full')
+            ui.input('Proxy URL', placeholder='http://127.0.0.1:7890').bind_value(conf, 'proxy').classes('w-full')
+        with ui.row().classes('items-center gap-4'):
+            ui.button('测试向量', icon='science', on_click=lambda e: self._test_embedding(e.sender)) \
+                .props('flat dense color=green')
+            ui.label('切换后，各项目的记忆会在下次检索时用新模型重新生成').classes('text-xs text-gray-500')
+        self.memory_status = ui.refreshable(self._render_memory_status)
+        self.memory_status()
+
+    def _render_memory_status(self):
+        error = getattr(self.rag, 'last_error', '')
+        if error:
+            ui.label(f'最近一次向量生成失败：{error}').classes('text-sm text-red-600')
+
+    async def _test_embedding(self, button):
+        button.props('loading')
+        try:
+            dim = await asyncio.to_thread(check_embedder, copy.deepcopy(self.config['embedding']))
+        except EmbeddingError as error:
+            ui.notify(f'向量不可用：{error}', type='negative', multi_line=True)
+        else:
+            ui.notify(f'向量可用（{dim} 维）', type='positive')
+        finally:
+            button.props(remove='loading')
 
     def _render_role_panel(self, role_key):
         role_conf = self.config[role_key]

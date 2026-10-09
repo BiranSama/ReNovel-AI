@@ -11,8 +11,8 @@ echo.
 
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未检测到 Python，请先安装 Python 3.10 或 3.11
-    echo [Error] Python not found. Please install Python 3.10 or 3.11
+    echo [错误] 未检测到 Python，请先安装 Python 3.11 或更高版本
+    echo [Error] Python not found. Please install Python 3.11 or newer
     echo.
     echo 下载地址 / Download: https://www.python.org/downloads/
     pause
@@ -22,10 +22,10 @@ if errorlevel 1 (
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PYTHON_VERSION=%%v
 echo [信息] 检测到 Python 版本: %PYTHON_VERSION%
 
-echo %PYTHON_VERSION% | findstr /r "3\.1[01]\." >nul
+echo %PYTHON_VERSION% | findstr /r "^3\.1[1-9]\." >nul
 if errorlevel 1 (
-    echo [警告] 推荐使用 Python 3.10 或 3.11，当前版本可能存在兼容性问题
-    echo [Warning] Python 3.10 or 3.11 is recommended
+    echo [警告] 需要 Python 3.11 或更高版本，当前版本无法安装部分依赖
+    echo [Warning] Python 3.11 or newer is required
     echo.
     choice /c yn /m "是否继续安装？ / Continue anyway? (y/n)"
     if errorlevel 2 exit /b 0

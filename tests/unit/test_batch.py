@@ -31,8 +31,8 @@ class FakeMemory:
     async def aindex_chapter(self, project_id, chapter_id, text):
         self.indexed.append((project_id, chapter_id, text))
 
-    async def aclone_project_memory(self, old, new):
-        self.cloned.append((old, new))
+    async def aclone_project_memory(self, old, new, chapter_map=None):
+        self.cloned.append((old, new, chapter_map))
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def test_backup_maps_chapters_and_leaves_original_untouched(setup, tmp_path, mon
 
     original_ids = chapter_ids(pm, pid)
     assert list(mapping) == original_ids and list(mapping.values()) == chapter_ids(pm, backup)
-    assert memory.cloned == [(pid, backup)]
+    assert memory.cloned == [(pid, backup, mapping)]  # 记忆里的章节 id 也换成副本的
 
     assert [p["id"] for p in asyncio.run(pm.get_backups(pid))] == [backup]
     assert asyncio.run(pm.get_backups(backup)) == []
@@ -220,6 +220,35 @@ def test_conditional_update_only_writes_unchanged_content(setup):
     assert asyncio.run(pm.get_chapter_content(first)) == "甲一。\n甲二。"
     assert asyncio.run(pm.update_chapter_content(first, "新", expected="甲一。\n甲二。"))
     assert asyncio.run(pm.get_chapter_content(first)) == "新"
+
+
+def test_chapter_memory_is_updated_before_the_next_chapter(setup):
+    """整理过记忆的项目：每章改写保存后先更新它的章节记忆，再改下一章，后面章节的参考资料跟上前面的改动。"""
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+    log = []
+
+    class Refine(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            log.append(("改写", request.text))
+            return await super().refine(request)
+
+    class Store:
+        async def has_any(self, project_id):
+            return True
+
+    class ChapterMemory:
+        async def update(self, project_id, chapter_ids=None):
+            log.append(("记忆", chapter_ids))
+            if ids[0] in chapter_ids:
+                raise LLMError("额度不足")  # 整理失败不中断批量
+            return 1
+
+    outcome = asyncio.run(BatchService(pm, Refine(), chapter_store=Store(), chapter_memory=ChapterMemory())
+                          .run(pid, ids[:2]))
+    assert outcome.chapters_done == 2 and not outcome.error
+    assert log == [("改写", "甲一。"), ("改写", "甲二。"), ("记忆", {ids[0]}),
+                   ("改写", "乙一。"), ("改写", "乙二。"), ("记忆", {ids[1]})]
 
 
 def test_backup_drops_a_graph_cached_before_the_copy_finished(setup, tmp_path, monkeypatch):

@@ -5,7 +5,7 @@
   没有人在场（批量）时总是按审校意见自动重试
 - 是否附带额外写作建议（guidance，如全文模式的军师报告）
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 from src.llm import LLMError
@@ -14,6 +14,11 @@ from src.services.context import ContextBuilder
 
 # Reviewer 同时读原文和改写，各取前后两部分，避免全文模式下超出模型上下文
 REVIEW_EXCERPT_CHARS = 6000
+REVIEW_INSTRUCTION = (
+    "请评分，并对照设定资料检查改写：人物言行是否符合角色档案（OOC）、与前文事件和角色状态是否矛盾（时间线）、"
+    "是否提前泄露了伏笔，以及是否完成改写指令。冲突要指出具体出处，如“第3章张三左臂受伤，此处却用左手提剑”。\n"
+    '只输出 JSON：{"score": 0 到 10 的整数, "suggestion": "具体修改建议", "conflicts": ["具体冲突，没有则为空列表"]}'
+)
 
 
 def excerpt(text: str, limit: int = REVIEW_EXCERPT_CHARS) -> str:
@@ -41,6 +46,14 @@ class Review:
     passed: bool
     raw: str = ""
     error: str = ""  # 审校调用失败时的提示；此时不拦截改写结果
+    conflicts: list[str] = field(default_factory=list)  # 与前文设定的具体冲突（OOC、时间线、伏笔）
+
+    @property
+    def feedback(self) -> str:
+        """交给 Writer 重写的意见：修改建议 + 具体冲突。"""
+        lines = [self.suggestion] if self.suggestion else []
+        lines += [f"冲突：{c}" for c in self.conflicts]
+        return "\n".join(lines)
 
 
 @dataclass
@@ -95,17 +108,19 @@ class RefinePipeline:
             elif not can_retry:
                 return RefineResult(text, review, attempts)
             else:
-                feedback = review.suggestion
+                feedback = review.feedback
 
     async def review(self, request: RefineRequest, candidate: str) -> Review:
         """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
-        references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
+        # 按原文和改写一起找资料：改写里新出现（或换成）的角色也要对照档案与前文事件
+        references = await self.context.gather(request.project_id, f"{request.text}\n{candidate}",
+                                               request.chapter_index, "author")
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("原文", excerpt(request.text)),
             section("改写", excerpt(candidate)),
             section("改写指令", request.instruction),
-            '请评分，只输出 JSON：{"score": 0 到 10 的整数, "suggestion": "具体修改建议"}',
+            REVIEW_INSTRUCTION,
         )
         try:
             raw = await self.llm.complete(self._role("reviewer"), self._messages("reviewer", prompt))
@@ -113,12 +128,15 @@ class RefinePipeline:
             return Review(score=None, suggestion="", passed=True, error=str(error))
 
         data = parse_json_object(raw) or {}
+        suggestion = str(data.get("suggestion", ""))
+        conflicts = data.get("conflicts") if isinstance(data.get("conflicts"), list) else []
+        conflicts = [str(c).strip() for c in conflicts if str(c).strip()]
         try:
             score = float(data["score"])
         except (KeyError, TypeError, ValueError):
-            return Review(score=None, suggestion=str(data.get("suggestion", "")), passed=True, raw=raw)
+            return Review(score=None, suggestion=suggestion, passed=True, raw=raw, conflicts=conflicts)
         passed = score >= self.settings.get_review_threshold()
-        return Review(score=score, suggestion=str(data.get("suggestion", "")), passed=passed, raw=raw)
+        return Review(score=score, suggestion=suggestion, passed=passed, raw=raw, conflicts=conflicts)
 
     async def analyze(self, request: RefineRequest) -> str:
         """军师分析：评估改写指令的可行性与风险，输出简报。"""

@@ -11,6 +11,7 @@ class AppState:
 
         self.segments = []
         self.full_text_draft = ""
+        self.full_text_history = []  # 全文工作台里被 AI 重写替换掉的草稿，撤销时恢复
         self.saved_text = None  # 当前章节最近一次打开或保存时数据库里的正文：保存时据此发现别处的修改
         self.instruction = ""  # 底部的全局精修指令
 
@@ -19,6 +20,8 @@ class AppState:
         self.is_batch_running = False
         self.stop_signal = False
         self.graph_task_running = False
+        self.memory_task_running = False
+        self.memory_pending = {}  # 项目 id → 等待整理的章节 id（None 表示全部）
 
         # --- UI 引用 ---
         self.ui = {

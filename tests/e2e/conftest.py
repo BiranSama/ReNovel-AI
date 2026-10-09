@@ -88,13 +88,15 @@ class App:
 def app(fake_llm, tmp_path_factory):
     root = tmp_path_factory.mktemp("app")
     data = root / "data"
-    for sub in ("projects", "vectordb", "presets"):
+    for sub in ("projects", "models", "presets"):
         (data / sub).mkdir(parents=True)
 
     role = {"provider": "openai", "api_key": "sk-test", "base_url": f"{fake_llm}/v1",
             "model": "fake-model", "temperature": 0.7, "proxy": ""}
     config = {r: dict(role) for r in ROLES}
-    config.update(enable_reviewer=True, review_threshold=8, review_mode="manual")
+    config.update(enable_reviewer=True, review_threshold=8, review_mode="manual",
+                  embedding={"provider": "api", "api_key": "sk-test", "base_url": f"{fake_llm}/v1",
+                             "model": "fake-embedding"})
     (data / "config.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
     port = _free_port()

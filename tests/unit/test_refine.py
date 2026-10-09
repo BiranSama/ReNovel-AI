@@ -61,7 +61,7 @@ class FakeMemory:
     def __init__(self):
         self.views = []
 
-    async def asearch(self, query, project_id, n_results=5):
+    async def asearch(self, query, project_id, n_results=5, chapter_ids=None):
         return ["张三走进咖啡馆。", "李四早已等候多时。"]
 
 
@@ -166,6 +166,22 @@ def test_manual_mode_still_asks_after_last_attempt_but_cannot_retry():
     result = run(make_pipeline(llm, make_settings(review_mode="manual")), on_reject=keep_retrying)
     assert asked == [True, True, False]  # 最后一次未通过也要让用户看到，但不能再重写
     assert (result.text, result.attempts, result.review.passed) == ("改写3。", 3, False)
+
+
+def test_reviewer_context_is_gathered_from_the_rewrite_too():
+    """改写里新出现（或换成）的角色也要对照档案：审校的参考资料按原文和改写一起检索。"""
+    pipeline = make_pipeline(FakeLLM())
+    seen = []
+    gather = pipeline.context.gather
+
+    async def spy(project_id, text, chapter_index, view="reader"):
+        seen.append((view, text))
+        return await gather(project_id, text, chapter_index, view)
+
+    pipeline.context.gather = spy
+    run(pipeline)
+    author = [text for view, text in seen if view == "author"]
+    assert author and "张三走进咖啡馆。" in author[0] and "改写1。" in author[0]
 
 
 def test_reviewer_sees_bounded_excerpts():

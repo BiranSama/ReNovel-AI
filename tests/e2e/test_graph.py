@@ -1,12 +1,15 @@
-"""知识图谱冒烟测试：导入时选择建立图谱，后台抽取关系并落盘。
+"""导入时选择整理全书：后台先整理章节记忆，再抽取人物关系，结果落盘并能在右侧栏查看。
 
 单独成模块，以便使用一个全新的应用实例。
 """
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 import pytest
+from fake_llm import VERY_SLOW
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.e2e
 
@@ -31,3 +34,60 @@ def test_build_graph_on_import(page, app):
     assert graph and graph["links"], app.log_tail()
     assert {n["id"] for n in graph["nodes"]} == {"张三", "李四"}
     assert len(graph["links"]) == 1  # 每章都抽到同一条关系，只保留一条
+
+
+def test_chapter_memories_are_built_and_shown(page, app):
+    con = sqlite3.connect(app.data_dir / "projects" / "novelforge.db")
+    rows = con.execute("SELECT c.title, m.summary, m.characters FROM chapter_memories m "
+                       "JOIN chapters c ON c.id = m.chapter_id ORDER BY c.order_index").fetchall()
+    assert len(rows) == 6  # 记忆先于图谱整理，图谱完成时记忆已全部写入
+    preface, first = rows[0], rows[1]
+    assert preface[1] == ""  # 序章太短，不调用模型
+    assert first[1] == "第一章 测试章节1：张三与李四在咖啡馆叙旧。" and json.loads(first[2]) == ["张三", "李四"]
+
+    page.locator("header button:has(i:text-is('hub'))").click()
+    page.get_by_role("tab", name="记忆").click()
+    item = page.locator(".memory-item", has_text="第一章 测试章节1")
+    expect(item).to_contain_text("张三与李四在咖啡馆叙旧")
+    item.click()
+    expect(item.get_by_text("• 两人聊起往事")).to_be_visible()
+
+
+def test_character_profiles_can_be_viewed_and_edited(page, app):
+    page.get_by_role("tab", name="角色").click()
+    zhang = page.locator(".character-item", has_text="张三")
+    expect(zhang).to_contain_text("又名 三哥")
+    zhang.click()
+
+    dialog = page.locator(".character-dialog")
+    expect(dialog).to_contain_text("第一章 测试章节1：第一章 测试章节1末与李四和好")
+    expect(dialog).to_contain_text("张三 朋友 李四")  # 人物关系来自图谱
+    dialog.get_by_label("备注（改写和审校时会参考）").fill("左撇子")
+    dialog.get_by_role("button", name="保存").click()
+    expect(dialog).to_be_hidden()
+
+    con = sqlite3.connect(app.data_dir / "projects" / "novelforge.db")
+    assert con.execute("SELECT notes FROM character_overrides WHERE name = '张三'").fetchone() == ("左撇子",)
+    expect(page.locator(".character-item", has_text="张三").locator("i", has_text="edit")).to_be_visible()
+
+
+def test_open_profile_survives_background_memory_update(page, app):
+    """保存章节后后台整理记忆，完成时会重建角色列表；正在编辑的档案弹窗不能被一起关掉。"""
+    page.locator(".chapter-item", has_text="第一章").click()
+    page.wait_for_function("() => document.querySelectorAll('.segment-card').length === 6")
+    page.locator(".segment-card").first.locator("textarea").nth(1).fill(f"张三推门进来。{VERY_SLOW}")
+    page.evaluate("document.querySelectorAll('.character-item').forEach(e => e.dataset.old = '1')")
+    page.get_by_role("button", name="保存").click()  # 这一章的记忆整理要 3 秒
+
+    page.locator(".character-item", has_text="张三").click()
+    dialog = page.locator(".character-dialog")
+    notes = dialog.get_by_label("备注（改写和审校时会参考）")
+    notes.fill("还没保存的备注")
+    assert page.locator(".character-item[data-old]").count(), "弹窗打开前记忆就整理完了，测不到刷新"
+    page.wait_for_function(  # 记忆整理完，角色列表已重建
+        "() => document.querySelector('.character-item') && !document.querySelector('.character-item[data-old]')",
+        timeout=20000)
+    expect(dialog).to_be_visible()
+    expect(notes).to_have_value("还没保存的备注")
+    dialog.get_by_role("button", name="取消").click()
+    expect(dialog).to_be_hidden()

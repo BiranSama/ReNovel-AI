@@ -54,24 +54,28 @@ class BatchOutcome:
 
 
 class BatchService:
-    def __init__(self, projects, refine, memory=None, graphs=None):
-        self.projects = projects  # ProjectManager
-        self.refine = refine      # RefinePipeline
-        self.memory = memory      # RAGEngine，可选
-        self.graphs = graphs      # GraphStore，可选：复制图谱后让副本重新读取
-        self._running: set[str] = set()  # 正在批量改写的项目（所有标签页共享）
+    def __init__(self, projects, refine, memory=None, chapter_store=None, chapter_memory=None, graphs=None):
+        self.projects = projects            # ProjectManager
+        self.refine = refine                # RefinePipeline
+        self.memory = memory                # RAGEngine，可选
+        self.chapter_store = chapter_store  # ChapterMemoryStore，可选
+        self.chapter_memory = chapter_memory  # ChapterMemoryService，可选：每章改写后更新它的章节记忆
+        self.graphs = graphs                # GraphStore，可选：复制图谱后让副本重新读取
+        self._running: set[str] = set()     # 正在批量改写的项目（所有标签页共享）
 
     def is_running(self, project_id: str) -> bool:
         return project_id in self._running
 
     async def make_backup(self, project_id: str, suffix: str = BACKUP_SUFFIX) -> tuple[str, dict[str, str]]:
-        """复制项目（含向量记忆与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
+        """复制项目（含向量记忆、章节记忆与知识图谱），返回副本 id 和 原章节 id → 副本章节 id 的映射。"""
         backup_id = await self.projects.duplicate_project(project_id, suffix)
-        if self.memory:
-            await self.memory.aclone_project_memory(project_id, backup_id)
         originals = await self.projects.get_chapters(project_id)
         copies = await self.projects.get_chapters(backup_id)
         mapping = {o["id"]: c["id"] for o, c in zip(originals, copies)}
+        if self.memory:
+            await self.memory.aclone_project_memory(project_id, backup_id, mapping)
+        if self.chapter_store:
+            await self.chapter_store.clone(project_id, backup_id, mapping)
         clone_graph(project_id, backup_id, mapping)
         if self.graphs:  # 复制完成前另一个标签页可能已打开副本、缓存了空图谱
             self.graphs.forget(backup_id)
@@ -136,9 +140,19 @@ class BatchService:
                 continue
             if self.memory:
                 await self.memory.aindex_chapter(project_id, chapter["id"], content)
+            await self._update_chapter_memory(project_id, chapter["id"])
             await self.projects.save_progress(project_id, chapter["id"])
             outcome.chapters_done += 1
 
         if on_progress:
             on_progress(BatchProgress("", outcome.chapters_done, len(targets), 0, 0))
         return outcome
+
+    async def _update_chapter_memory(self, project_id: str, chapter_id: str) -> None:
+        """整理过记忆的项目：先按改写后的内容更新这一章的记忆，再改下一章（后面章节的前情、角色状态要跟上）。"""
+        if not (self.chapter_memory and self.chapter_store and await self.chapter_store.has_any(project_id)):
+            return
+        try:
+            await self.chapter_memory.update(project_id, chapter_ids={chapter_id})
+        except LLMError:
+            pass  # 记忆整理失败不中断批量改写：过时的记忆已删除，批量结束后会再整理一次
