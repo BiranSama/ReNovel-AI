@@ -19,7 +19,7 @@ class FakeContext:
     def __init__(self):
         self.calls = []
 
-    def gather(self, project_id, text, chapter_index, view):
+    async def gather(self, project_id, text, chapter_index, view):
         self.calls.append((project_id, text, chapter_index, view))
         return f"{view} 资料"
 

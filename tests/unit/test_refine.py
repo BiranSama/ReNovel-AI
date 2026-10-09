@@ -61,7 +61,7 @@ class FakeMemory:
     def __init__(self):
         self.views = []
 
-    def search(self, query, project_id, n_results=5):
+    async def asearch(self, query, project_id, n_results=5):
         return ["张三走进咖啡馆。", "李四早已等候多时。"]
 
 
@@ -71,7 +71,7 @@ class FakeGraph:
 
 
 def make_pipeline(llm, settings=None):
-    context = ContextBuilder(FakeMemory(), lambda: FakeGraph())
+    context = ContextBuilder(FakeMemory(), lambda project_id: FakeGraph())
     return RefinePipeline(llm, settings or make_settings(), context)
 
 

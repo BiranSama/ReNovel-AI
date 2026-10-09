@@ -2,6 +2,7 @@ import aiosqlite
 import uuid
 import json
 from datetime import datetime
+from typing import Optional
 
 from src import paths
 from src.services.importer import split_chapters
@@ -106,10 +107,18 @@ class ProjectManager:
             row = await cursor.fetchone()
             return (row[0] or "") if row else None  # 章节不存在返回 None；空章节返回 ""
 
-    async def update_chapter_content(self, chapter_id: str, new_content: str):
+    async def update_chapter_content(self, chapter_id: str, new_content: str, expected: Optional[str] = None) -> bool:
+        """保存章节。给出 expected 时只在当前内容仍是它时写入（期间被别处保存过就不覆盖），返回是否写入。"""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE chapters SET content = ? WHERE id = ?", (new_content, chapter_id))
+            if expected is None:
+                await db.execute("UPDATE chapters SET content = ? WHERE id = ?", (new_content, chapter_id))
+            else:
+                cursor = await db.execute("UPDATE chapters SET content = ? WHERE id = ? AND COALESCE(content, '') = ?",
+                                          (new_content, chapter_id, expected))
+                if not cursor.rowcount:
+                    return False
             await db.commit()
+        return True
 
     # --- 新增：进度存取 ---
     async def save_progress(self, project_id: str, chapter_id: str):
