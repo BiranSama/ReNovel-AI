@@ -104,7 +104,8 @@ class StyleService:
         raw = await self.llm.complete(self.settings.resolve_role("analyzer"),
                                       [{"role": "system", "content": system}, {"role": "user", "content": prompt}])
         data = parse_json_object(raw) or {}
-        description = str(data.get("description") or "").strip()
+        description = data.get("description")
+        description = description.strip() if isinstance(description, str) else ""  # 对象、列表等不能直接当描述用
         if not description:
             raise StyleExtractError("模型没有返回有效的风格描述，请重试")
         samples = []

@@ -159,3 +159,26 @@ def test_graph_updates_are_queued_across_projects():
     session = Session(services)
     asyncio.run(session.bg_build_graph("A"))
     assert calls == [("A", None), ("B", {"b1"})] and session.state.graph_pending == {}
+
+
+def test_memory_update_does_not_redraw_the_style_panel():
+    """整理完当前项目的记忆只刷新记忆和角色面板：文风面板里正在编辑、还没保存的内容不能被重绘掉。"""
+    class Memory:
+        async def update(self, project_id, on_progress=None, chapter_ids=None):
+            return 1
+
+    session = Session(SimpleNamespace(chapter_memory=Memory()))
+    session.state.current_project_id = "P"
+    refreshed = []
+
+    def view(name):
+        async def refresh():
+            refreshed.append(name)
+        return SimpleNamespace(refresh=refresh)
+
+    session.memory_view, session.character_view, session.style_view = view("记忆"), view("角色"), view("文风")
+    asyncio.run(session.bg_update_memory("P"))
+    assert refreshed == ["记忆", "角色"]
+
+    asyncio.run(session.refresh_memory_ui(include_style=True))  # 切换项目时
+    assert refreshed[2:] == ["记忆", "角色", "文风"]

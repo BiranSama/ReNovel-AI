@@ -6,6 +6,8 @@
 
 向量都做了 L2 归一化，点积即余弦相似度。所有调用都是阻塞的，由向量记忆放到后台线程执行。
 """
+import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Callable, Optional, Protocol
@@ -22,6 +24,9 @@ MAX_TOKENS = 512
 BATCH_SIZE = 32
 # 不同服务的单条输入上限不同（bge-large-zh 只有 512 token）：统一截断，超长段落只取开头生成向量（原文照常保存）
 MAX_API_INPUT_CHARS = 500
+# 下载失败后这段时间内不再重试，直接报同样的错：导入一本书时每章都要生成向量，不能每章都等一次下载超时
+DOWNLOAD_RETRY_SECONDS = 300
+_download_lock = threading.Lock()  # 多个标签页同时首次使用本地模型时依次进行，后到的直接用已下载的文件
 
 
 class EmbeddingError(Exception):
@@ -67,19 +72,25 @@ class LocalEmbedder:
         self.model_file, self.tokenizer_file, self.pooling = model_file, tokenizer_file, pooling
         self._download = download
         self._session = self._tokenizer = None
+        self._failed: Optional[tuple[float, str]] = None  # 最近一次下载失败的时间和提示
         self.name = f"local:{repo}"
 
     def _ensure_files(self) -> None:
-        for rel in (self.tokenizer_file, self.model_file):
-            target = self.model_dir / rel
-            if target.exists():
-                continue
-            url = f"{self.mirror}/{self.repo}/resolve/main/{rel}"
-            try:
-                self._download(url, target)
-            except Exception as error:
-                raise EmbeddingError(
-                    f"下载本地向量模型失败（{url}）：{error}。可在设置里更换下载镜像，或改用 API 生成向量") from error
+        if self._failed and time.monotonic() - self._failed[0] < DOWNLOAD_RETRY_SECONDS:
+            raise EmbeddingError(self._failed[1])
+        with _download_lock:
+            for rel in (self.tokenizer_file, self.model_file):
+                target = self.model_dir / rel
+                if target.exists():
+                    continue
+                url = f"{self.mirror}/{self.repo}/resolve/main/{rel}"
+                try:
+                    self._download(url, target)
+                except Exception as error:
+                    message = f"下载本地向量模型失败（{url}）：{error}。可在设置里更换下载镜像，或改用 API 生成向量"
+                    self._failed = (time.monotonic(), message)
+                    raise EmbeddingError(message) from error
+        self._failed = None
 
     def _load(self) -> None:
         if self._session:
@@ -151,9 +162,15 @@ class ApiEmbedder:
             for start in range(0, len(texts), BATCH_SIZE):
                 batch = [t[:MAX_API_INPUT_CHARS] for t in texts[start:start + BATCH_SIZE]]
                 response = client.embeddings.create(model=self.model, input=batch)
-                vectors += [item.embedding for item in sorted(response.data, key=lambda d: d.index)]
-        except openai.OpenAIError as error:
+                data = sorted(response.data or [], key=lambda d: d.index)
+                if [item.index for item in data] != list(range(len(batch))):
+                    raise EmbeddingError(f"向量 API 返回的结果不完整（{self.base_url}，模型 {self.model}）："
+                                         f"发送 {len(batch)} 条，收到 {len(data)} 条")
+                vectors += [item.embedding for item in data]
+        except (openai.OpenAIError, ValueError) as error:  # SDK 收到空结果时抛 ValueError
             raise EmbeddingError(f"向量 API 调用失败（{self.base_url}，模型 {self.model}）：{error}") from error
+        if vectors and (len({len(v) for v in vectors}) != 1 or not vectors[0]):
+            raise EmbeddingError(f"向量 API 返回的向量为空或维度不一致（{self.base_url}，模型 {self.model}）")
         return normalize(np.array(vectors)) if vectors else np.zeros((0, 0), np.float32)
 
 

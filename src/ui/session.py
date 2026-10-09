@@ -143,9 +143,12 @@ class Session:
     # ==========================
     # 2b. 章节记忆
     # ==========================
-    async def refresh_memory_ui(self):
-        """刷新章节记忆、角色档案和文风面板（切换项目、整理记忆后）。"""
-        for view in (self.memory_view, self.character_view, self.style_view):
+    async def refresh_memory_ui(self, include_style=False):
+        """刷新章节记忆和角色档案面板（整理记忆后）；切换项目时 include_style，连文风面板一起刷新。
+
+        整理完记忆不刷新文风面板：重绘会丢掉正在编辑、还没保存的文风。
+        """
+        for view in (self.memory_view, self.character_view, self.style_view if include_style else None):
             if not view: continue
             try: await view.refresh()
             except RuntimeError: pass  # 页面已关闭
@@ -230,7 +233,7 @@ class Session:
             except RuntimeError: pass
 
         self.refresh_graph_ui()
-        await self.refresh_memory_ui()
+        await self.refresh_memory_ui(include_style=True)
         chs = await self.services.pm.get_chapters(pid)
         if chs: await self.load_chapter(chs[0]['id'])
         else: await self.refresh_chapter_list()
@@ -507,6 +510,9 @@ class Session:
             ui.notify(f'{outcome.review_errors} 段审校未完成，已保留改写结果', type='warning')
         if outcome.review_rejected:
             ui.notify(f'{outcome.review_rejected} 段重试后仍未通过审校，已保留最后一次改写', type='warning')
+        if outcome.conflicts:
+            ui.notify(f'{"、".join(outcome.conflicts)} 在改写期间被手动保存过，已保留手动的修改；'
+                      '可用“继续上次进度”重新精修', type='warning', multi_line=True)
         self.update_status(f'批量：{summary}', 1.0)
         if outcome.chapters_done:  # 改写过的章节：已整理过记忆 / 建立了图谱的项目随之更新（内容没变的章节不会调用模型）
             if await self.services.chapter_store.has_any(pid):

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from fake_llm import CONTINUE_MARK, CONTINUE_TEXT
+from fake_llm import CONTINUE_MARK, CONTINUE_TEXT, VERY_SLOW
 
 pytestmark = pytest.mark.e2e
 
@@ -90,3 +90,17 @@ def test_continue_after_paragraph(page, app):
         "SELECT content FROM chapters WHERE title LIKE '第一章%'").fetchone()))
     paragraphs = content.split("\n\n")
     assert paragraphs[1].startswith("（1-2）") and paragraphs[2].startswith(CONTINUE_MARK)  # 插在第 2 段之后
+
+
+def test_changing_the_target_while_generating_blocks_adoption(page, app):
+    """生成过程中改了续写方式：生成完的草稿是按原来的位置写的，不能采纳到新的位置。"""
+    chapters = db(app).execute("SELECT COUNT(*) FROM chapters").fetchone()[0]
+    dialog = open_dialog(page)
+    dialog.get_by_label("大纲 / 走向（可选）").fill(f"两人告别{VERY_SLOW}")  # 生成要等几秒
+    dialog.get_by_role("button", name="生成").click()
+    dialog.get_by_text("在当前章节某段之后续写").click()
+    expect(dialog.locator(".continue-review")).to_have_text("生成期间改动了续写位置，请重新生成", timeout=30000)
+    expect(dialog.locator(".continue-draft textarea")).to_have_value(CONTINUE_MARK + CONTINUE_TEXT)
+    expect(dialog.get_by_role("button", name="采纳")).to_be_disabled()
+    dialog.get_by_role("button", name="关闭").click()
+    assert db(app).execute("SELECT COUNT(*) FROM chapters").fetchone()[0] == chapters

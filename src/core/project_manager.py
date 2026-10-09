@@ -146,19 +146,29 @@ class ProjectManager:
             row = await cursor.fetchone()
             return (row[0] or "") if row else None  # 章节不存在返回 None；空章节返回 ""
 
-    async def update_chapter_content(self, chapter_id: str, new_content: str):
-        """保存章节；内容有变化时把旧内容留作历史版本（每章保留最近 MAX_VERSIONS 个），可以恢复。"""
+    async def update_chapter_content(self, chapter_id: str, new_content: str, expected: Optional[str] = None) -> bool:
+        """保存章节；内容有变化时把旧内容留作历史版本（每章保留最近 MAX_VERSIONS 个），可以恢复。
+
+        给出 expected 时只在当前内容仍是它时写入（期间被别处保存过就不覆盖），返回是否写入。
+        """
         async with aiosqlite.connect(self.db_path) as db:
+            # 先拿写锁再读旧内容：两个标签页同时保存时依次进行，每个被替换掉的版本都能留进历史
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute("SELECT content FROM chapters WHERE id = ?", (chapter_id,))
             row = await cursor.fetchone()
-            if row and (row[0] or "") != new_content and (row[0] or "").strip():
+            old = (row[0] or "") if row else ""
+            if expected is not None and old != expected:
+                await db.rollback()
+                return False
+            if old != new_content and old.strip():
                 await db.execute("INSERT INTO chapter_versions (chapter_id, content, created_at) VALUES (?, ?, ?)",
-                                 (chapter_id, row[0], datetime.now().isoformat(timespec="seconds")))
+                                 (chapter_id, old, datetime.now().isoformat(timespec="seconds")))
                 await db.execute("DELETE FROM chapter_versions WHERE chapter_id = ? AND id NOT IN "
                                  "(SELECT id FROM chapter_versions WHERE chapter_id = ? ORDER BY id DESC LIMIT ?)",
                                  (chapter_id, chapter_id, MAX_VERSIONS))
             await db.execute("UPDATE chapters SET content = ? WHERE id = ?", (new_content, chapter_id))
             await db.commit()
+        return True
 
     async def get_chapter_versions(self, chapter_id: str) -> list[dict]:
         """章节的历史版本，最新的在前。"""
