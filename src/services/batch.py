@@ -3,8 +3,9 @@
 - 勾选“创建副本”时，在副本上改写，原项目保持原样
 - 进度以章为单位：一章全部处理完才保存并记录；中途停止或出错时，
   当前章已改写的部分不保存，下次续跑时从这一章重新开始（避免同一段被精修两次）
+- 改写期间这一章被手动保存过（例如在另一个标签页）：保留手动的修改，不写入改写结果，续跑时重新精修
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from src.llm import LLMError
@@ -49,6 +50,7 @@ class BatchOutcome:
     error: str = ""
     review_errors: int = 0    # 审校调用失败的段数（不影响改写结果）
     review_rejected: int = 0  # 重试到上限仍未通过审校的段数（保留最后一次改写）
+    conflicts: list[str] = field(default_factory=list)  # 改写期间被手动保存过、因此没有写入的章节标题
 
 
 class BatchService:
@@ -103,7 +105,8 @@ class BatchService:
         outcome = BatchOutcome(project_id, 0, len(targets))
 
         for chapter in targets:
-            paragraphs = split_paragraphs(await self.projects.get_chapter_content(chapter["id"]) or "")
+            original = await self.projects.get_chapter_content(chapter["id"]) or ""
+            paragraphs = split_paragraphs(original)
             revised = []
             for done, paragraph in enumerate(paragraphs):
                 if should_stop():
@@ -125,7 +128,9 @@ class BatchService:
                 revised.append(result.text.strip() or paragraph)  # 模型返回空时保留原文
 
             content = join_paragraphs(revised)
-            await self.projects.update_chapter_content(chapter["id"], content)
+            if not await self.projects.update_chapter_content(chapter["id"], content, expected=original):
+                outcome.conflicts.append(chapter["title"])  # 不记进度：续跑时按手动修改后的内容重新精修
+                continue
             if self.memory:
                 await self.memory.aindex_chapter(project_id, chapter["id"], content)
             await self.projects.save_progress(project_id, chapter["id"])

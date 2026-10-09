@@ -375,6 +375,9 @@ class Session:
             ui.notify(f'{outcome.review_errors} 段审校未完成，已保留改写结果', type='warning')
         if outcome.review_rejected:
             ui.notify(f'{outcome.review_rejected} 段重试后仍未通过审校，已保留最后一次改写', type='warning')
+        if outcome.conflicts:
+            ui.notify(f'{"、".join(outcome.conflicts)} 在改写期间被手动保存过，已保留手动的修改；'
+                      '可用“继续上次进度”重新精修', type='warning', multi_line=True)
         self.update_status(f'批量：{summary}', 1.0)
         if state.current_chapter_id and state.current_project_id == pid:
             await self.load_chapter(state.current_chapter_id)  # 刷新编辑器里的当前章
