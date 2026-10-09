@@ -23,7 +23,7 @@ STYLE_REVIEW_INSTRUCTION = (
     "另外对照文风档案给出文风贴合度（0 到 10 的整数），总分也要考虑文风是否贴合。"
     '在 JSON 里加上 "style_score" 字段。'
 )
-MAX_STYLE_SAMPLES = 3
+MAX_STYLE_SAMPLES = 3  # 与 src.services.style.MAX_SAMPLES 一致
 
 
 def excerpt(text: str, limit: int = REVIEW_EXCERPT_CHARS) -> str:
@@ -136,6 +136,9 @@ async def write_with_review(settings, write, review, on_reject=None) -> "RefineR
             feedback = result.feedback
 
 
+_LOAD = object()  # review() 的 style 参数缺省值：读取当前的文风档案
+
+
 # 审校未通过时询问用户：返回修改意见则据此重写，返回 None 表示接受当前结果。
 # 第三个参数 can_retry 为 False 表示已达最多重试次数，这次询问只能接受当前结果
 OnReject = Callable[[Review, str, bool], Awaitable[Optional[str]]]
@@ -161,18 +164,24 @@ class RefinePipeline:
     ) -> RefineResult:
         """改写并按审校策略重试。Writer 调用失败时抛出 LLMError。"""
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "reader")
-        style = await self.style_for(request.project_id)
-        return await write_with_review(
-            self.settings,
-            lambda feedback: self._write(request, references, feedback, on_text, style),
-            lambda text: self.review(request, text),
-            on_reject,
-        )
+        snapshot = {}
 
-    async def review(self, request: RefineRequest, candidate: str) -> Review:
-        """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。"""
+        async def write(feedback):
+            # 每次尝试都重新读取文风档案，写与审用同一份（重试期间档案被修改也不会前后不一致）
+            snapshot["style"] = await self.style_for(request.project_id)
+            return await self._write(request, references, feedback, on_text, snapshot["style"])
+
+        return await write_with_review(
+            self.settings, write, lambda text: self.review(request, text, snapshot["style"]), on_reject)
+
+    async def review(self, request: RefineRequest, candidate: str, style=_LOAD) -> Review:
+        """给改写结果打分。审校失败或无法解析时不拦截（passed=True），失败原因记在 error。
+
+        style 为写这一稿时用的文风档案；不传时读取当前的档案。
+        """
         references = await self.context.gather(request.project_id, request.text, request.chapter_index, "author")
-        style = await self.style_for(request.project_id)
+        if style is _LOAD:
+            style = await self.style_for(request.project_id)
         prompt = join_sections(
             section("设定资料（作者视角）", references),
             section("文风档案", style_text(style)),

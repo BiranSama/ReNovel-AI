@@ -82,7 +82,9 @@ class StyleService:
         return await self.store.get(project_id) or StyleProfile()
 
     async def save(self, project_id: str, profile: StyleProfile) -> None:
-        await self.store.save(project_id, profile)
+        """保存档案；代表段落最多 MAX_SAMPLES 段（改写和审校也只用这么多）。"""
+        samples = [s for s in profile.samples if s.strip()][:MAX_SAMPLES]
+        await self.store.save(project_id, StyleProfile(profile.description, samples, profile.source))
 
     async def apply_preset(self, project_id: str, name: str) -> StyleProfile:
         profile = preset_profile(name)
@@ -106,7 +108,8 @@ class StyleService:
         if not description:
             raise StyleExtractError("模型没有返回有效的风格描述，请重试")
         samples = []
-        for index in data.get("samples") or []:
+        indices = data.get("samples") if isinstance(data.get("samples"), list) else []  # 格式不对时用默认段落
+        for index in indices:
             try:
                 number = int(index)
             except (TypeError, ValueError):
