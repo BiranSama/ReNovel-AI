@@ -14,11 +14,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
 CALLS: list[dict] = []
+EMBEDDING_CALLS: list[int] = []
 
 REWRITE_MARK = "【FAKE改写】"
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
 REJECT_ALWAYS = "【总是驳回】"  # 指令里带上它时，每次审校都给低分
 SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
+VERY_SLOW = "【很慢】"  # 请求里带上它时延迟 3 秒：后台任务完成前留出时间做界面操作
 _rejected: set[str] = set()
 
 
@@ -30,6 +32,14 @@ def reply_for(messages: list[dict]) -> str:
             [{"source": "张三", "relation": "朋友", "target": "李四", "desc": "大学同学", "is_reveal": False}],
             ensure_ascii=False,
         )
+    if "请整理这一章的记忆" in user:  # 章节记忆
+        title = user.split("【章节标题】\n", 1)[1].split("\n", 1)[0] if "【章节标题】" in user else ""
+        return json.dumps({"summary": f"{title}：张三与李四在咖啡馆叙旧。", "characters": ["张三", "李四"],
+                           "events": ["张三在咖啡馆遇见李四", "两人聊起往事"],
+                           "character_notes": [
+                               {"name": "张三", "aliases": ["三哥"], "traits": "念旧", "status": f"{title}末与李四和好"},
+                               {"name": "李四", "aliases": [], "traits": "沉稳", "status": ""}]},
+                          ensure_ascii=False)
     if "评分" in user:  # Reviewer 打分
         if REJECT_ALWAYS in user:
             return json.dumps({"score": 2, "suggestion": "节奏太慢"}, ensure_ascii=False)
@@ -52,12 +62,37 @@ def calls():
     return CALLS
 
 
+def char_vector(text: str, dim: int = 64) -> list[float]:
+    """按字符计数的确定性向量：共用字越多越相似，足够让检索结果可预测。"""
+    vector = [0.0] * dim
+    for ch in text:
+        vector[ord(ch) % dim] += 1.0
+    return vector
+
+
+@app.post("/v1/embeddings")
+async def embeddings(req: Request):
+    body = await req.json()
+    texts = body["input"] if isinstance(body["input"], list) else [body["input"]]
+    EMBEDDING_CALLS.append(len(texts))
+    return {"object": "list", "model": body.get("model"),
+            "data": [{"object": "embedding", "index": i, "embedding": char_vector(t)} for i, t in enumerate(texts)],
+            "usage": {"prompt_tokens": 1, "total_tokens": 1}}
+
+
+@app.get("/embedding_calls")
+def embedding_calls():
+    return EMBEDDING_CALLS
+
+
 @app.post("/v1/chat/completions")
 async def chat(req: Request):
     body = await req.json()
     messages = body["messages"]
     CALLS.append({"stream": body.get("stream"), "last": messages[-1]["content"]})
-    if SLOW in messages[-1]["content"]:
+    if VERY_SLOW in messages[-1]["content"]:
+        await asyncio.sleep(3)
+    elif SLOW in messages[-1]["content"]:
         await asyncio.sleep(1)
     text = reply_for(messages)
     created = int(time.time())

@@ -34,13 +34,13 @@ class ReviewDialog:
         """返回修改意见表示按意见重写；返回 None 表示接受当前结果。"""
         self.score.text = f'{review.score:g}分' if review.score is not None else '未评分'
         self.original.value, self.candidate.value = original, candidate
-        self.feedback.value = review.suggestion
+        self.feedback.value = review.feedback
         self.retry.set_visibility(can_retry)
         self.limit.set_visibility(not can_retry)
         self._answer = asyncio.get_running_loop().create_future()
         self.dialog.open()
         answer = await self._answer
-        return (answer.strip() or review.suggestion) if answer is not None else None
+        return (answer.strip() or review.feedback) if answer is not None else None
 
     def _resolve(self, answer: Optional[str]):
         if self._answer and not self._answer.done():

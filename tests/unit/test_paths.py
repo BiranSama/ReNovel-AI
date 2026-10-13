@@ -24,10 +24,11 @@ def test_env_override_wins(monkeypatch, tmp_path):
     assert paths.db_file() == tmp_path / "custom" / "projects" / "novelforge.db"
     assert paths.config_file() == tmp_path / "custom" / "config.json"
     assert paths.graph_file("p1") == tmp_path / "custom" / "projects" / "p1_graph.json"
+    assert paths.memory_db() == tmp_path / "custom" / "memory.db"
 
 
 def test_ensure_dirs_creates_layout(monkeypatch, tmp_path):
     monkeypatch.setenv("RENOVEL_DATA_DIR", str(tmp_path / "d"))
     assert paths.ensure_dirs() == tmp_path / "d"
-    for sub in ("projects", "vectordb", "presets"):
+    for sub in ("projects", "models", "presets"):
         assert (tmp_path / "d" / sub).is_dir()

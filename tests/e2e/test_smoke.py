@@ -79,6 +79,12 @@ def test_rewrite_segment(page):
     assert revised.startswith(REWRITE_MARK)
 
 
+def test_rewrite_uses_vector_memory(fake_llm):
+    assert json.load(urllib.request.urlopen(f"{fake_llm}/embedding_calls"))  # 导入时生成了向量
+    calls = json.load(urllib.request.urlopen(f"{fake_llm}/calls"))
+    assert any("【相关记忆】" in c["last"] for c in calls)  # 改写时检索到了前文
+
+
 def test_reviewer_rejection_retries_with_user_feedback(page, fake_llm):
     page.get_by_placeholder("在此输入全局精修指令...").fill(f"润色{REJECT_ONCE}")
     page.locator(".segment-card button:has(i:text-is('auto_fix_high'))").nth(1).click()

@@ -83,6 +83,8 @@ dmypy.json
 data/projects/*.db
 data/projects/*_graph.json
 data/vectordb/
+data/memory.db
+data/models/
 # 设置里填写的 API Key 会明文保存在这里
 data/config.json
 data/presets/*

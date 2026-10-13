@@ -2,6 +2,7 @@
 from nicegui import ui
 
 from src.ui.components.batch_dialog import open_batch_dialog
+from src.ui.components.versions_dialog import open_versions_dialog
 
 
 def create_toolbar(session, editor):
@@ -11,6 +12,8 @@ def create_toolbar(session, editor):
             ui.button('保存', on_click=session.save_all).props('unelevated color=green-6 dense icon=save')
             ui.button(icon='file_download', on_click=lambda: ui.download(session.current_text().encode('utf-8'), 'export.txt')) \
                 .props('flat round dense')
+            ui.button(icon='restore', on_click=lambda: open_versions_dialog(session)) \
+                .props('flat round dense').tooltip('历史版本')
 
         ui.separator().props('vertical')
         ui.input(placeholder='在此输入全局精修指令...').bind_value(state, 'instruction') \

@@ -8,17 +8,18 @@ echo "╚═══════════════════════�
 echo ""
 
 if ! command -v python3 &> /dev/null; then
-    echo "[错误] 未检测到 Python，请先安装 Python 3.10 或 3.11"
-    echo "[Error] Python not found. Please install Python 3.10 or 3.11"
+    echo "[错误] 未检测到 Python，请先安装 Python 3.11 或更高版本"
+    echo "[Error] Python not found. Please install Python 3.11 or newer"
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 echo "[信息] 检测到 Python 版本: $PYTHON_VERSION"
 
-if [[ ! "$PYTHON_VERSION" =~ ^3\.1[01]\. ]]; then
-    echo "[警告] 推荐使用 Python 3.10 或 3.11，当前版本可能存在兼容性问题"
-    echo "[Warning] Python 3.10 or 3.11 is recommended"
+# 依赖的 numpy 2.4 / onnxruntime 1.30 需要 3.11+
+if ! python3 -c "import sys; sys.exit(sys.version_info < (3, 11))"; then
+    echo "[警告] 需要 Python 3.11 或更高版本，当前版本无法安装部分依赖"
+    echo "[Warning] Python 3.11 or newer is required"
     read -p "是否继续安装？ / Continue anyway? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then

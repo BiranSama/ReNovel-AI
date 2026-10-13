@@ -1,139 +1,127 @@
-import asyncio
-import os
-from concurrent.futures import ThreadPoolExecutor
+"""向量记忆：章节正文按段落存进向量库，改写、审校、聊天时按语义检索相关的前文。
 
-import chromadb
-from chromadb.utils import embedding_functions
-import uuid
+记忆只是已保存正文的索引，随时可以从项目数据库重建；旧版本的 ChromaDB 数据就是这样迁移的。
+检索失败（如本地模型下载失败、API 出错）时返回空结果并记下原因，不影响改写本身。
+"""
+import asyncio
+import json
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Iterable, Optional
 
 from src import paths
+from src.ai.embeddings import Embedder, create_embedder
+from src.ai.vector_store import VectorStore
+from src.utils.logger import ConsoleLogger as Log
+
+MIN_LINE_CHARS = 6  # 太短的行（如“嗯。”）检索价值不大
+LEGACY_MIGRATED = "legacy_chroma_migrated"
+
+
+def split_lines(text: str) -> list[str]:
+    return [line.strip() for line in (text or "").split("\n") if len(line.strip()) >= MIN_LINE_CHARS]
+
 
 class RAGEngine:
-    def __init__(self):
-        print("[RAG] 正在初始化向量数据库 (ChromaDB)...")
-        self.client = chromadb.PersistentClient(path=str(paths.vectordb_dir()))
-        self.emb_fn = embedding_functions.DefaultEmbeddingFunction()
-        self.collection = self.client.get_or_create_collection(
-            name="novel_memory",
-            embedding_function=self.emb_fn
-        )
-        print(f"[RAG] 数据库加载成功。现有记忆条目: {self.collection.count()}")
-        # 向量库读写和嵌入计算都是阻塞调用（首次还要下载嵌入模型）：放到一个专用线程里依次执行，
-        # 界面的事件循环不会被卡住；单线程也避免多个标签页同时读写向量库
+    def __init__(self, embedding_config: Optional[Callable[[], dict]] = None,
+                 embedder: Optional[Embedder] = None, db_path=None):
+        """embedding_config 返回设置里的 embedding 配置（改了设置会自动换模型）；embedder 直接指定（测试用）。"""
+        self.store = VectorStore(db_path or paths.memory_db())
+        self._config = embedding_config or (lambda: {})
+        self._fixed = embedder
+        self._embedder, self._embedder_key = None, None
+        self.last_error = ""
+        # 嵌入计算和数据库读写都是阻塞调用（首次还要下载模型）：放到一个专用线程里依次执行，
+        # 界面的事件循环不会被卡住；单线程也避免多个标签页同时写入
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag")
+        self._rebuilding: dict[str, asyncio.Event] = {}  # 正在从旧数据重建记忆的项目
 
+    def embedder(self) -> Embedder:
+        if self._fixed:
+            return self._fixed
+        config = self._config() or {}
+        key = json.dumps(config, sort_keys=True, ensure_ascii=False)
+        if key != self._embedder_key:
+            self._embedder, self._embedder_key = create_embedder(config), key
+        return self._embedder
+
+    # --- 异步接口：界面和服务都用这些 ---
     async def _in_thread(self, fn, *args):
         return await asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
 
-    async def asearch(self, query: str, project_id: str, n_results=5) -> list[str]:
-        return await self._in_thread(self.search, query, project_id, n_results)
+    async def asearch(self, query: str, project_id: str, n_results=5, chapter_ids=None) -> list[str]:
+        await self._wait_rebuilt(project_id)
+        return await self._in_thread(self.search, query, project_id, n_results, chapter_ids)
 
     async def aindex_chapter(self, project_id: str, chapter_id: str, text: str):
         return await self._in_thread(self.index_chapter, project_id, chapter_id, text)
 
-    async def aclone_project_memory(self, old_pid: str, new_pid: str):
-        return await self._in_thread(self.clone_project_memory, old_pid, new_pid)
+    async def aclone_project_memory(self, old_pid: str, new_pid: str, chapter_map: Optional[dict] = None):
+        await self._wait_rebuilt(old_pid)  # 否则副本只复制到已经重建的部分，之后也不会补上
+        return await self._in_thread(self.clone_project_memory, old_pid, new_pid, chapter_map)
 
-    def index_chapter(self, project_id: str, chapter_id: str, text: str):
-        # 先删掉这一章已有的片段：章节变短或被清空时，旧内容不能留在记忆里继续被检索到
-        try:
-            self.collection.delete(where={"$and": [{"project_id": project_id}, {"chapter_id": chapter_id}]})
-        except Exception as e:
-            print(f"[RAG Error] 清理旧片段失败: {e}")
-        if not text.strip(): return
-        # 过滤短句，保留有意义的段落
-        segments = [line.strip() for line in text.split('\n') if len(line.strip()) > 5]
-        if not segments: return
+    # --- 从旧数据重建期间：检索和复制等这个项目重建完（重建只在升级后第一次启动时进行一次）---
+    def begin_rebuild(self, project_ids: Iterable[str]) -> None:
+        for project_id in project_ids:
+            self._rebuilding[project_id] = asyncio.Event()
 
-        # 生成唯一 ID
-        ids = [f"{project_id}_{chapter_id}_{i}" for i in range(len(segments))]
-        metadatas = [{"project_id": project_id, "chapter_id": chapter_id, "line_index": i} for i in range(len(segments))]
-        
-        try:
-            self.collection.upsert(ids=ids, documents=segments, metadatas=metadatas)
-            print(f"[RAG] ✅ 已记忆章节 {chapter_id} ({len(segments)} 条)")
-        except Exception as e:
-            print(f"[RAG Error] 存储失败: {e}")
+    def finish_rebuild(self, project_id: str) -> None:
+        event = self._rebuilding.pop(project_id, None)
+        if event:
+            event.set()
 
-    def search(self, query: str, project_id: str, n_results=5) -> list[str]:
-        """按语义检索本项目的记忆片段，失败时返回空列表。"""
-        try:
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                where={"project_id": project_id} # 严格隔离
-            )
-            docs = results['documents'][0] if results['documents'] else []
-            if docs: print(f"[RAG] 🧠 联想到了 {len(docs)} 条相关记忆")
-            return docs
-        except Exception as e:
-            print(f"[RAG Error] 搜索失败: {e}")
+    async def _wait_rebuilt(self, project_id: str) -> None:
+        event = self._rebuilding.get(project_id)
+        if event:
+            await event.wait()
+
+    # --- 同步实现 ---
+    def index_chapter(self, project_id: str, chapter_id: str, text: str) -> None:
+        """用章节的最新内容替换它的记忆。向量生成失败时先只存原文，检索时再补。"""
+        lines = split_lines(text)
+        embedder = self.embedder()
+        vectors = None
+        if lines:
+            try:
+                vectors = embedder.embed(lines)
+            except Exception as error:
+                self._fail(error)
+        self.store.replace_chapter(project_id, chapter_id, lines, embedder.name, vectors)
+
+    def search(self, query: str, project_id: str, n_results=5, chapter_ids: Optional[Iterable[str]] = None) -> list[str]:
+        """按语义检索本项目的记忆片段；chapter_ids 不为空时只在这些章节里找。失败时返回空列表。"""
+        if not project_id or not (query or "").strip():
             return []
-
-    def search_context(self, query: str, project_id: str, n_results=5) -> str:
-        docs = self.search(query, project_id, n_results)
-        if not docs: return ""
-        context_text = "\n".join([f"- {doc}" for doc in docs])
-        return f"【前文剧情/相关记忆 (RAG)】：\n{context_text}\n"
-
-    def delete_project_memory(self, project_id: str):
         try:
-            self.collection.delete(where={"project_id": project_id})
-            print(f"[RAG] 已清除项目 {project_id} 的记忆")
-        except Exception as e:
-            print(f"[RAG Error] 删除失败: {e}")
+            embedder = self.embedder()
+            self._refresh(project_id, embedder)
+            query_vector = embedder.embed([query])[0]
+        except Exception as error:
+            self._fail(error)
+            return []
+        self.last_error = ""
+        return self.store.search(project_id, embedder.name, query_vector, n_results, chapter_ids)
 
-    # --- 新增：记忆克隆 (用于副本创建) ---
-    def clone_project_memory(self, old_pid: str, new_pid: str):
-        """
-        将旧项目的所有记忆复制一份给新项目，实现记忆隔离与演变
-        """
-        print(f"[RAG] 正在克隆记忆: {old_pid} -> {new_pid} ...")
-        try:
-            # 1. 获取旧项目的所有数据
-            # ChromaDB 的 get 方法可以获取所有匹配的 embedding 和 metadata
-            existing_data = self.collection.get(where={"project_id": old_pid}, include=["documents", "metadatas", "embeddings"])
-            
-            if not existing_data['ids']:
-                print("[RAG] 原项目无记忆，跳过克隆")
-                return
+    def clone_project_memory(self, old_pid: str, new_pid: str, chapter_map: Optional[dict] = None) -> None:
+        """复制项目时一并复制记忆（直接复用向量）；chapter_map 把原章节 id 换成副本的章节 id。"""
+        count = self.store.clone_project(old_pid, new_pid, chapter_map)
+        Log.system(f"[RAG] 记忆复制完成：{count} 条")
 
-            count = len(existing_data['ids'])
-            
-            # 2. 构建新数据
-            new_ids = []
-            new_metadatas = []
-            new_documents = existing_data['documents']
-            new_embeddings = existing_data['embeddings']
+    def delete_project_memory(self, project_id: str) -> None:
+        self.store.delete_project(project_id)
 
-            for i in range(count):
-                # 生成新的唯一 ID，但保持原来的章节结构逻辑
-                # 原 ID 格式: {old_pid}_{chapter_id}_{index}
-                # 我们只需要替换 ID 前缀，或者干脆生成全新的 UUID 防止冲突
-                # 为了简单且安全，我们使用 UUID
-                new_ids.append(str(uuid.uuid4()))
-                
-                # 复制元数据，但修改 project_id
-                meta = existing_data['metadatas'][i].copy()
-                meta['project_id'] = new_pid
-                new_metadatas.append(meta)
+    def _refresh(self, project_id: str, embedder: Embedder) -> None:
+        """补上缺失或由其他模型生成的向量（换了模型、或之前生成失败）。"""
+        while batch := self.store.stale(project_id, embedder.name):
+            ids, texts = zip(*batch)
+            self.store.set_vectors(project_id, list(ids), embedder.name, embedder.embed(list(texts)))
 
-            # 3. 批量插入 (Chroma 建议分批插入，防止一次太大)
-            batch_size = 500
-            for i in range(0, count, batch_size):
-                end = min(i + batch_size, count)
-                self.collection.upsert(
-                    ids=new_ids[i:end],
-                    embeddings=new_embeddings[i:end], # 直接复用向量，省去重新计算的时间！
-                    documents=new_documents[i:end],
-                    metadatas=new_metadatas[i:end]
-                )
-            
-            print(f"[RAG] ✅ 记忆克隆完成，共复制 {count} 条。新项目 ({new_pid}) 拥有了独立的记忆空间。")
-            
-        except Exception as e:
-            print(f"[RAG Error] 克隆失败: {e}")
+    def _fail(self, error: Exception) -> None:
+        self.last_error = str(error)
+        Log.system(f"[RAG] 向量生成失败：{error}")
 
-if __name__ == "__main__":
-    # 测试代码
-    rag = RAGEngine()
+    # --- 旧版本 ChromaDB 数据迁移 ---
+    def needs_migration(self) -> bool:
+        return (paths.vectordb_dir() / "chroma.sqlite3").exists() and not self.store.get_meta(LEGACY_MIGRATED)
+
+    def mark_migrated(self) -> None:
+        self.store.set_meta(LEGACY_MIGRATED, "1")

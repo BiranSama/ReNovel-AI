@@ -2,8 +2,9 @@
 from nicegui import ui
 
 from src.llm import LLMError
+from src.services import segments
+from src.services.segments import split_text
 from src.ui.components.review_dialog import ReviewDialog
-from src.ui.session import split_text
 
 DEFAULT_SEGMENT_INSTRUCTION = "润色"
 DEFAULT_FULL_INSTRUCTION = "精修"
@@ -57,7 +58,43 @@ class Editor:
         finally:
             seg['busy'] = False
             if button: button.props(remove='loading')
-        if seg.get('ui_component'): seg['ui_component'].value = seg.get('revised', '')
+        self._sync_card(seg)
+
+    # ==========================
+    # 段落版本：候选、采纳与撤销
+    # ==========================
+    def undo_segment(self, seg):
+        if segments.undo(seg):
+            self._sync_card(seg)
+
+    def adopt_segment(self, seg):
+        segments.adopt(seg)
+        self._sync_card(seg)
+
+    def _edit_segment(self, seg, text):
+        segments.edit(seg, text)
+        self._sync_card(seg, update_text=False)  # 正在输入，不回写输入框
+
+    @staticmethod
+    def _sync_card(seg, update_text=True):
+        """按段落状态更新这张卡片上的候选文字、采纳状态和按钮。"""
+        ui_refs = seg.get('ui') or {}
+        if not ui_refs: return
+        try:
+            if update_text: ui_refs['revised'].value = seg.get('revised', '')
+            has_candidate = bool((seg.get('revised') or '').strip())
+            ui_refs['status'].text = ('已采纳' if seg['adopted'] else '未采纳（保存原文）') if has_candidate else ''
+            ui_refs['status'].classes(replace='text-xs segment-status ' + ('text-green-600' if seg['adopted'] else 'text-gray-400'))
+            ui_refs['adopt'].set_visibility(segments.can_adopt(seg))
+            ui_refs['undo'].set_enabled(segments.can_undo(seg))
+        except RuntimeError:
+            pass  # 页面已关闭
+
+    def undo_full(self):
+        if self.state.full_text_history:
+            self.state.full_text_draft = self.state.full_text_history.pop()
+            self.refresh()
+            ui.notify('已撤销全文重写')
 
     async def rewrite_full(self):
         """全文重写：先由军师分析并给出报告，用户确认后按报告改写。"""
@@ -87,9 +124,10 @@ class Editor:
 
         if state.view_mode == 'segment':
             state.segments = split_text(result.text)
-            self.refresh()
         else:
+            state.full_text_history.append(full_text)  # 可以撤销这次重写
             state.full_text_draft = result.text
+        self.refresh()
         ui.notify('全文重写完成')
 
     @staticmethod
@@ -107,8 +145,7 @@ class Editor:
     # ==========================
     def _render(self):
         for seg in self.state.segments:
-            seg.setdefault('original', '')
-            seg.setdefault('revised', '')
+            segments.ensure_fields(seg)
             seg.setdefault('prompt_input', None)
         if self.state.view_mode == 'full':
             self._render_full()
@@ -127,11 +164,13 @@ class Editor:
             with ui.column().classes('w-1/2 h-full full-height-col bg-white rounded-lg border-2 border-indigo-100 shadow-sm'):
                 with ui.row().classes('w-full justify-between items-center p-2 border-b bg-indigo-50'):
                     ui.label('📝 改写结果').classes('text-xs font-bold text-indigo-600')
-                    ui.button('同步分段', on_click=self.sync_to_segments).props('dense flat icon=sync color=purple size=sm')
+                    with ui.row().classes('gap-1'):
+                        ui.button('撤销重写', on_click=self.undo_full).props('dense flat icon=undo color=grey size=sm') \
+                            .bind_visibility_from(state, 'full_text_history', backward=bool)
+                        ui.button('同步分段', on_click=self.sync_to_segments).props('dense flat icon=sync color=purple size=sm')
 
                 if not state.full_text_draft and state.segments:  # 初始化全文草稿
-                    lines = [s.get('revised') or s.get('original', '') for s in state.segments]
-                    state.full_text_draft = "\n\n".join(filter(None, lines))
+                    state.full_text_draft = segments.merge(state.segments)
                 self.full_text_area = ui.textarea().bind_value(state, 'full_text_draft') \
                     .props('borderless placeholder="AI改写内容将实时显示..."').classes('full-height-textarea w-full p-2')
 
@@ -144,23 +183,31 @@ class Editor:
                         with ui.column().classes('w-[45%]'):
                             ui.label(f'#{i+1} 原文').classes('text-xs font-bold text-gray-400 mb-1')
                             ui.textarea(value=seg.get('original', '')) \
-                                .on('input', lambda e, i=i: state.segments[i].__setitem__('original', e.value)) \
+                                .on('update:model-value', lambda e, s=seg: s.__setitem__('original', e.args), [None]) \
                                 .props('autogrow outlined dense').classes('w-full bg-gray-50 text-sm rounded')
 
                         with ui.column().classes('w-[10%] pt-6 gap-2 items-center'):
                             ui.button(icon='auto_fix_high', on_click=lambda e, i=i: self.rewrite_segment(i, e.sender)) \
                                 .props('round flat dense color=indigo').tooltip('精修')
+                            undo = ui.button(icon='undo', on_click=lambda s=seg: self.undo_segment(s)) \
+                                .props('round flat dense color=grey size=sm').tooltip('撤销：退回上一个版本')
                             ui.button(icon='delete', on_click=lambda i=i: (state.segments.pop(i), self.refresh())) \
                                 .props('round flat dense color=red size=sm')
                             with ui.expansion('', icon='edit_note').props('dense flat'):
                                 seg['prompt_input'] = ui.input(placeholder='局部指令').props('dense outlined').classes('w-32 text-xs')
 
                         with ui.column().classes('w-[45%]'):
-                            ui.label('AI 改写').classes('text-xs font-bold text-indigo-400 mb-1')
+                            with ui.row().classes('w-full items-center gap-2 mb-1'):
+                                ui.label('AI 改写').classes('text-xs font-bold text-indigo-400')
+                                status = ui.label().classes('text-xs segment-status')
+                                adopt = ui.button('采纳', on_click=lambda s=seg: self.adopt_segment(s)) \
+                                    .props('flat dense size=sm color=green')
                             seg['ui_component'] = ui.textarea(value=seg.get('revised', '')) \
-                                .on('input', lambda e, i=i: state.segments[i].__setitem__('revised', e.value)) \
+                                .on('update:model-value', lambda e, s=seg: self._edit_segment(s, e.args), [None]) \
                                 .props('autogrow outlined dense').classes('w-full bg-white border border-indigo-100 text-sm rounded')
+                        seg['ui'] = {'revised': seg['ui_component'], 'status': status, 'adopt': adopt, 'undo': undo}
+                        self._sync_card(seg, update_text=False)
 
                     with ui.element('div').classes('insert-zone') \
-                            .on('click', lambda i=i: (state.segments.insert(i + 1, {'original': '', 'revised': ''}), self.refresh())):
+                            .on('click', lambda i=i: (state.segments.insert(i + 1, segments.new_segment()), self.refresh())):
                         ui.label('+').classes('insert-btn')
