@@ -1,4 +1,7 @@
+import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
+
 import chromadb
 from chromadb.utils import embedding_functions
 import uuid
@@ -15,6 +18,21 @@ class RAGEngine:
             embedding_function=self.emb_fn
         )
         print(f"[RAG] 数据库加载成功。现有记忆条目: {self.collection.count()}")
+        # 向量库读写和嵌入计算都是阻塞调用（首次还要下载嵌入模型）：放到一个专用线程里依次执行，
+        # 界面的事件循环不会被卡住；单线程也避免多个标签页同时读写向量库
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag")
+
+    async def _in_thread(self, fn, *args):
+        return await asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
+
+    async def asearch(self, query: str, project_id: str, n_results=5) -> list[str]:
+        return await self._in_thread(self.search, query, project_id, n_results)
+
+    async def aindex_chapter(self, project_id: str, chapter_id: str, text: str):
+        return await self._in_thread(self.index_chapter, project_id, chapter_id, text)
+
+    async def aclone_project_memory(self, old_pid: str, new_pid: str):
+        return await self._in_thread(self.clone_project_memory, old_pid, new_pid)
 
     def index_chapter(self, project_id: str, chapter_id: str, text: str):
         # 先删掉这一章已有的片段：章节变短或被清空时，旧内容不能留在记忆里继续被检索到

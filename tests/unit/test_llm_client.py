@@ -144,3 +144,22 @@ def test_list_models():
     ]}))
     assert asyncio.run(rec.client().list_models(CONFIG)) == ["m1", "m2"]
     assert asyncio.run(Recorder().client().list_models({**CONFIG, "api_key": ""})) == []
+
+
+def test_check_connection_returns_reply():
+    rec = Recorder()
+    assert asyncio.run(rec.client().check_connection(CONFIG)) == "你好，世界"
+    assert "连接测试" in rec.body()["messages"][-1]["content"]
+
+
+def test_check_connection_reports_friendly_error():
+    rec = Recorder(lambda request: httpx2.Response(401, json={"error": {"message": "bad key"}}))
+    with pytest.raises(LLMError, match="API Key 无效"):
+        asyncio.run(rec.client().check_connection(CONFIG))
+
+
+def test_check_connection_rejects_empty_reply():
+    rec = Recorder(lambda request: httpx2.Response(
+        200, content=sse(""), headers={"content-type": "text/event-stream"}))
+    with pytest.raises(LLMError, match="没有返回内容"):
+        asyncio.run(rec.client().check_connection(CONFIG))

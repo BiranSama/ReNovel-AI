@@ -176,3 +176,16 @@ def test_clone_graph_remaps_chapter_ids(env):
     assert set(copy.graph.graph["extracted"]) == {f"new-{old}" for old in ids}
     edge = next(iter(copy.graph["张三"]["李四"].values()))
     assert set(edge["sources"]) == {f"new-{old}" for old in ids[:2]}
+
+
+def test_concurrent_updates_of_same_project_run_one_after_another(env):
+    """两个标签页同时更新同一项目的图谱：依次进行，后一个只处理仍有变化的章节，不重复调用模型。"""
+    pm, pid = env
+    llm, engine = FakeLLM(), GraphEngine(pid)
+    graph_service = service(pm, llm)
+
+    async def both():
+        return await asyncio.gather(graph_service.update(engine, pid), graph_service.update(engine, pid))
+
+    asyncio.run(both())
+    assert len(llm.prompts) == 2  # 两章各一次

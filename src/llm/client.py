@@ -120,6 +120,13 @@ class LLMClient:
     async def complete(self, config: dict, messages: list[dict]) -> str:
         return "".join([token async for token in self.stream(config, messages)])
 
+    async def check_connection(self, config: dict) -> str:
+        """发一条很短的请求，确认 Key、地址和模型都可用，返回模型的回复。失败时抛出 LLMError。"""
+        reply = await self.complete(config, [{"role": "user", "content": "连接测试，请只回复：OK"}])
+        if not reply.strip():
+            raise LLMError("连接成功，但模型没有返回内容，请检查模型名")
+        return reply.strip()
+
     async def list_models(self, config: dict) -> list[str]:
         """列出可用模型，失败时返回空列表。"""
         try:

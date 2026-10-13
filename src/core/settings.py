@@ -54,11 +54,13 @@ DEFAULT_FULL_CONFIG = {
     'analyzer': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o', 'temperature': 0.5, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['analyzer']},
     'chat': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.7, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['chat']},
     'graph': {'provider': 'openai', 'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-3.5-turbo', 'temperature': 0.1, 'proxy': '', 'prompt_blocks': DEFAULT_BLOCKS['graph']},
-    'enable_reviewer': False, 
-    'review_threshold': 8, 
-    'review_mode': 'manual',
+    'enable_reviewer': False,
+    'review_threshold': 8,
+    'review_mode': 'manual',     # manual：未通过时弹窗询问；auto：自动按审校意见重试
+    'max_review_retries': 2,
     'enable_nsfw_mode': False
 }
+REVIEW_MODES = {'manual': '弹窗询问我', 'auto': '自动按意见重试'}
 
 # 角色没填 API Key 时沿用 Writer 的连接，但保留自己的提示词和温度
 _INHERITED_KEYS = ("provider", "api_key", "base_url", "model", "proxy")
@@ -76,6 +78,42 @@ def merge_defaults(user_conf, default_conf):
     return result
 
 
+def resolve_role(config: dict, role_key: str) -> dict:
+    """角色配置副本：缺 API Key 时沿用 Writer 的连接（设置界面测试未保存的配置时也用它）。"""
+    conf = copy.deepcopy(config.get(role_key, config["writer"]))
+    writer = config["writer"]
+    if role_key != "writer" and needs_api_key(conf) and not needs_api_key(writer):
+        conf.update({key: writer.get(key) for key in _INHERITED_KEYS})
+    return conf
+
+
+def inherits_writer(config: dict, role_key: str) -> bool:
+    return role_key != "writer" and needs_api_key(config[role_key]) and not needs_api_key(config["writer"])
+
+
+def changes(draft: dict, baseline: dict) -> dict:
+    """draft 相对 baseline 改动过的项（嵌套 dict 逐层比较）。"""
+    result = {}
+    for key, val in draft.items():
+        old = baseline.get(key)
+        if isinstance(val, dict) and isinstance(old, dict):
+            nested = changes(val, old)
+            if nested:
+                result[key] = nested
+        elif val != old:
+            result[key] = val
+    return result
+
+
+def assign(target: dict, source: dict) -> None:
+    """把 source 的内容就地写入 target，嵌套的 dict 保持原对象（界面绑定的仍是同一个对象）。"""
+    for key, val in source.items():
+        if isinstance(val, dict) and isinstance(target.get(key), dict):
+            assign(target[key], val)
+        else:
+            target[key] = copy.deepcopy(val)
+
+
 class AppSettings:
     def __init__(self, config_manager: ConfigManager | None = None):
         self.cm = config_manager or ConfigManager()
@@ -84,16 +122,27 @@ class AppSettings:
     def save(self) -> None:
         self.cm.save_config(self.config)
 
+    def draft(self) -> dict:
+        """供设置界面编辑的副本；保存前不影响正在使用的设置。"""
+        return copy.deepcopy(self.config)
+
+    def apply(self, draft: dict, baseline: dict | None = None) -> None:
+        """采用编辑后的设置并保存。数字框被清空时用默认值。
+
+        给出 baseline（打开弹窗时的设置）时只写入改过的项：另一个标签页在此期间保存的其他修改不会被旧值覆盖。
+        """
+        assign(self.config, changes(draft, baseline) if baseline is not None else draft)
+        for key, low, high in (("review_threshold", 0, 10), ("max_review_retries", 0, 5)):
+            value = self.config.get(key)
+            self.config[key] = DEFAULT_FULL_CONFIG[key] if value is None else int(min(max(value, low), high))
+        self.save()
+
     def get_role_config(self, role_key: str) -> dict:
         return self.config.get(role_key, self.config["writer"])
 
     def resolve_role(self, role_key: str) -> dict:
         """供实际调用使用的角色配置副本：缺 API Key 时沿用 Writer 的连接。"""
-        conf = copy.deepcopy(self.get_role_config(role_key))
-        writer = self.get_role_config("writer")
-        if role_key != "writer" and needs_api_key(conf) and not needs_api_key(writer):
-            conf.update({key: writer.get(key) for key in _INHERITED_KEYS})
-        return conf
+        return resolve_role(self.config, role_key)
 
     def is_reviewer_enabled(self) -> bool:
         return bool(self.config["enable_reviewer"])

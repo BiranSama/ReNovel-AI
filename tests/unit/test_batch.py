@@ -28,10 +28,10 @@ class FakeMemory:
     def __init__(self):
         self.indexed, self.cloned = [], []
 
-    def index_chapter(self, project_id, chapter_id, text):
+    async def aindex_chapter(self, project_id, chapter_id, text):
         self.indexed.append((project_id, chapter_id, text))
 
-    def clone_project_memory(self, old, new):
+    async def aclone_project_memory(self, old, new):
         self.cloned.append((old, new))
 
 
@@ -171,3 +171,74 @@ def test_empty_chapter_is_skipped_without_error(setup):
     assert asyncio.run(pm.get_chapter_content("missing")) is None
     outcome = asyncio.run(BatchService(pm, FakeRefine()).run(pid, ids[:1]))
     assert outcome.chapters_done == 1 and not outcome.error
+
+
+def test_same_project_cannot_run_two_batches_at_once(setup):
+    """两个标签页同时对同一项目跑批量：第二个直接返回错误，不会互相覆盖。"""
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+
+    class Slow(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            await asyncio.sleep(0.05)
+            return await super().refine(request)
+
+    service = BatchService(pm, Slow())
+
+    async def both():
+        return await asyncio.gather(service.run(pid, ids[:1]), service.run(pid, ids[:1]))
+
+    first, second = asyncio.run(both())
+    assert first.chapters_done == 1 and not first.error
+    assert second.error and second.chapters_done == 0
+    assert not service.is_running(pid)  # 结束后可以再跑
+
+
+def test_chapter_saved_during_rewrite_keeps_the_manual_edit(setup):
+    """不建副本的批量改写期间，用户（可能在另一个标签页）保存了正在改写的章节：保留手动修改，不被改写结果覆盖。"""
+    pm, pid = setup
+    ids = chapter_ids(pm, pid)
+
+    class SaveMidway(FakeRefine):
+        async def refine(self, request, on_text=None, on_reject=None):
+            if request.text == "乙一。":
+                await pm.update_chapter_content(ids[1], "手动改过的第二章。")
+            return await super().refine(request)
+
+    outcome = asyncio.run(BatchService(pm, SaveMidway()).run(pid, ids))
+    assert outcome.conflicts == ["第二章 发展"] and outcome.chapters_done == 2 and not outcome.stopped
+    assert chapters(pm, pid)[1] == ("第二章 发展", "手动改过的第二章。")
+    assert chapters(pm, pid)[2] == ("第三章 高潮", "改：丙一。")  # 其余章节照常改写
+    remaining = asyncio.run(BatchService(pm, FakeRefine()).remaining_chapters(pid))
+    assert [c["id"] for c in remaining] == [ids[1]]  # 续跑时重新精修这一章
+
+
+def test_conditional_update_only_writes_unchanged_content(setup):
+    pm, pid = setup
+    first = chapter_ids(pm, pid)[0]
+    assert not asyncio.run(pm.update_chapter_content(first, "新", expected="不是当前内容"))
+    assert asyncio.run(pm.get_chapter_content(first)) == "甲一。\n甲二。"
+    assert asyncio.run(pm.update_chapter_content(first, "新", expected="甲一。\n甲二。"))
+    assert asyncio.run(pm.get_chapter_content(first)) == "新"
+
+
+def test_backup_drops_a_graph_cached_before_the_copy_finished(setup, tmp_path, monkeypatch):
+    """副本先建项目、后复制图谱：期间另一个标签页打开副本会缓存空图谱，复制完要让它重新读取。"""
+    from src.core.managers import GraphStore
+
+    monkeypatch.setenv("RENOVEL_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.core.managers.GraphEngine", lambda project_id: object())
+    pm, pid = setup
+    graphs = GraphStore()
+    service = BatchService(pm, FakeRefine(), graphs=graphs)
+    original = pm.duplicate_project
+
+    async def duplicate_and_open(project_id, suffix):
+        backup = await original(project_id, suffix)
+        graphs.get(backup)  # 另一个标签页此时打开了副本
+        duplicate_and_open.backup = backup
+        return backup
+
+    monkeypatch.setattr(pm, "duplicate_project", duplicate_and_open)
+    backup, _ = asyncio.run(service.make_backup(pid))
+    assert backup == duplicate_and_open.backup and backup not in graphs._engines
