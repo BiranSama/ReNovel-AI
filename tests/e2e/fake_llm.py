@@ -17,9 +17,12 @@ CALLS: list[dict] = []
 EMBEDDING_CALLS: list[int] = []
 
 REWRITE_MARK = "【FAKE改写】"
+CONTINUE_MARK = "【FAKE续写】"
+CONTINUE_TEXT = "张三与李四在门口告别，约定明日再见。\n第二天一早，张三又来到了咖啡馆，却发现李四的座位空着，桌上只留下一张字条。"
 REJECT_ONCE = "【先驳回一次】"  # 指令里带上它时，第一次审校给低分
 REJECT_ALWAYS = "【总是驳回】"  # 指令里带上它时，每次审校都给低分
 SLOW = "【慢速】"  # 指令里带上它时，每次调用延迟 1 秒（用于测试停止）
+UNREADABLE_REVIEW = "【审校看不懂】"  # 请求里带上它时，审校返回无法解析的内容
 VERY_SLOW = "【很慢】"  # 请求里带上它时延迟 3 秒：后台任务完成前留出时间做界面操作
 _rejected: set[str] = set()
 
@@ -32,6 +35,8 @@ def reply_for(messages: list[dict]) -> str:
             [{"source": "张三", "relation": "朋友", "target": "李四", "desc": "大学同学", "is_reveal": False}],
             ensure_ascii=False,
         )
+    if "请接着前文续写" in user:  # 续写
+        return CONTINUE_MARK + CONTINUE_TEXT
     if "请提炼这本书的文风" in user:  # 文风提炼
         return json.dumps({"description": "测试文风：短句白描。", "samples": [1, 2]}, ensure_ascii=False)
     if "请整理这一章的记忆" in user:  # 章节记忆
@@ -40,9 +45,12 @@ def reply_for(messages: list[dict]) -> str:
                            "events": ["张三在咖啡馆遇见李四", "两人聊起往事"],
                            "character_notes": [
                                {"name": "张三", "aliases": ["三哥"], "traits": "念旧", "status": f"{title}末与李四和好"},
-                               {"name": "李四", "aliases": [], "traits": "沉稳", "status": ""}]},
+                               {"name": "李四", "aliases": [], "traits": "沉稳", "status": ""}],
+                           "hooks": [f"{title}里李四欲言又止"]},
                           ensure_ascii=False)
     if "评分" in user:  # Reviewer 打分
+        if UNREADABLE_REVIEW in user:
+            return "抱歉，这次没法打分。"
         if REJECT_ALWAYS in user:
             return json.dumps({"score": 2, "suggestion": "节奏太慢"}, ensure_ascii=False)
         if REJECT_ONCE in user and REJECT_ONCE not in _rejected:

@@ -2,6 +2,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from src.services.batch import BatchOutcome
 from src.ui.session import Session
 
@@ -57,6 +59,162 @@ def test_batch_refreshes_memories_and_graph_of_rewritten_chapters(monkeypatch):
 
     asyncio.run(go())
     assert sorted(started) == [("graph", "P", {"c1"}), ("memory", "P", {"c1"})]
+
+
+class FakeStore:
+    async def has_any(self, pid):
+        return False
+
+
+class FakeProjects:
+    def __init__(self):
+        self.saved = {}
+
+    async def update_chapter_content(self, cid, text, expected=None):
+        self.saved[cid] = text
+        return True
+
+
+class FakeRag:
+    async def aindex_chapter(self, pid, cid, text):
+        pass
+
+
+def continuation_session(monkeypatch):
+    services = SimpleNamespace(pm=FakeProjects(), rag=FakeRag(), chapter_store=FakeStore(),
+                               graphs=SimpleNamespace(get=lambda pid: None))
+    session = Session(services)
+    session.state.current_project_id, session.state.current_chapter_id = "P", "c1"
+    monkeypatch.setattr("src.ui.session.ui.notify", lambda *a, **k: None)
+
+    async def no_memory(pid, ids):
+        pass
+
+    monkeypatch.setattr(session, "bg_update_memory", no_memory)
+    return session
+
+
+def test_adopting_paragraphs_in_full_text_mode_keeps_them(monkeypatch):
+    from src.services.continuation import ContinueRequest
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.view_mode, state.full_text_draft = "full", "甲。\n\n乙。"
+    request = ContinueRequest("P", 1, "甲。", "乙。", mode="paragraph", chapter_id="c1", after=1)
+
+    async def go():
+        await session.adopt_continuation(request, "续一。\n续二。")
+        await asyncio.sleep(0)
+
+    asyncio.run(go())
+    assert session.services.pm.saved["c1"] == "甲。\n\n续一。\n\n续二。\n\n乙。"
+
+
+def test_preparing_a_continuation_does_not_touch_paragraph_history(monkeypatch):
+    """全文工作台里打开续写、生成草稿：续写位置按全文草稿计算，但不改动各段的原文、候选与撤销历史。"""
+    from src.services import segments as segment_ops
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.segments = split_text("原文甲。\n原文乙。")
+    segment_ops.propose(state.segments[0], "改写甲。")
+    kept = [dict(seg) for seg in state.segments]
+    state.view_mode, state.full_text_draft = "full", "改写甲。\n\n原文乙。\n\n全文里新加的一段。"
+
+    async def chapter_index():
+        return 1
+
+    monkeypatch.setattr(session, "chapter_index", chapter_index)
+    assert len(session.working_segments()) == 3
+    request = asyncio.run(session.continue_request("paragraph", after=3))
+    assert request.preceding == "改写甲。\n\n原文乙。\n\n全文里新加的一段。" and request.after == 3
+    assert [dict(seg) for seg in state.segments] == kept
+
+
+def test_paragraphs_adopted_in_full_text_mode_can_still_be_undone(monkeypatch):
+    """全文工作台里采纳段后续写：保存后插入的段落仍是「候选」，回到分段模式可以撤销。"""
+    from src.services import segments as segment_ops
+    from src.services.continuation import ContinueRequest
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.view_mode, state.full_text_draft = "full", "甲。\n\n乙。"
+    request = ContinueRequest("P", 1, "甲。", "乙。", mode="paragraph", chapter_id="c1", after=1)
+    asyncio.run(session.adopt_continuation(request, "续一。"))
+    inserted = state.segments[1]
+    assert (inserted["original"], segment_ops.current(inserted)) == ("", "续一。") and segment_ops.can_undo(inserted)
+    assert session.services.pm.saved["c1"] == "甲。\n\n续一。\n\n乙。"
+
+
+def test_adopting_refuses_when_text_after_the_insertion_point_changed(monkeypatch):
+    from src.services.continuation import ContinueRequest
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    session.state.segments = split_text("甲。\n改过的乙。")
+    request = ContinueRequest("P", 1, "甲。", "乙。", mode="paragraph", chapter_id="c1", after=1)
+    with pytest.raises(ValueError, match="前后的正文有改动"):
+        asyncio.run(session.adopt_continuation(request, "续。"))
+    assert session.services.pm.saved == {}
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_new_chapter_is_opened_only_when_nothing_is_unsaved(monkeypatch, edited):
+    """采纳新章节后会打开它；当前章节有未保存的修改时不切过去，免得丢掉这些修改。"""
+    from src.services.continuation import ContinueRequest
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    state = session.state
+    state.saved_text = "甲。\n乙。"
+    state.segments = split_text(state.saved_text)
+    if edited:
+        state.segments[0]["original"] = "改过但没保存的甲。"
+    assert session.has_unsaved_changes() == edited
+
+    async def adopt_chapter(request, title, text):
+        return "c9"
+
+    opened = []
+
+    async def load_chapter(cid):
+        opened.append(cid)
+
+    session.services.continuation = SimpleNamespace(adopt_chapter=adopt_chapter)
+    monkeypatch.setattr(session, "load_chapter", load_chapter)
+    asyncio.run(session.adopt_continuation(ContinueRequest("P", 2, "乙。"), "第二章的正文。", "第二章"))
+    assert opened == ([] if edited else ["c9"])
+
+
+def test_adopting_refuses_when_target_changed(monkeypatch):
+    from src.services.continuation import ContinueRequest
+    from src.services.segments import split_text
+
+    session = continuation_session(monkeypatch)
+    session.state.segments = split_text("甲。\n乙。")
+    stale = ContinueRequest("P", 1, "别的前文。", "乙。", mode="paragraph", chapter_id="c1", after=1)
+    other_chapter = ContinueRequest("P", 1, "甲。", "乙。", mode="paragraph", chapter_id="c2", after=1)
+    for request in (stale, other_chapter):
+        with pytest.raises(ValueError):
+            asyncio.run(session.adopt_continuation(request, "续。"))
+    assert session.services.pm.saved == {}
+
+
+def test_graph_updates_are_queued_across_projects():
+    calls = []
+    session = None
+
+    async def update(engine, project, on_progress=None, chapter_ids=None):
+        calls.append((project, chapter_ids))
+        if len(calls) == 1:
+            await session.bg_build_graph("B", {"b1"})  # 更新 A 时又保存了 B
+        return 0
+
+    services = SimpleNamespace(graphs=SimpleNamespace(get=lambda pid: object()), graph=SimpleNamespace(update=update))
+    session = Session(services)
+    asyncio.run(session.bg_build_graph("A"))
+    assert calls == [("A", None), ("B", {"b1"})] and session.state.graph_pending == {}
 
 
 def test_memory_update_does_not_redraw_the_style_panel():

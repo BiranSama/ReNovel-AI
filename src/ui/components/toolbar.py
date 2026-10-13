@@ -2,6 +2,7 @@
 from nicegui import ui
 
 from src.ui.components.batch_dialog import open_batch_dialog
+from src.ui.components.continue_dialog import open_continue_dialog
 from src.ui.components.versions_dialog import open_versions_dialog
 
 
@@ -23,6 +24,8 @@ def create_toolbar(session, editor):
             ui.button('AI 全文重写', on_click=editor.rewrite_full) \
                 .props('unelevated color=purple-6 text-white icon=auto_fix_normal size=md')
 
+        ui.button('续写', icon='post_add', on_click=lambda: open_continue_dialog(session, editor)) \
+            .props('flat dense color=teal')
         ui.button('批量', on_click=lambda: open_batch_dialog(session)).props('flat dense color=indigo')
         ui.button('停止', on_click=session.stop_workflow).props('outline color=red dense') \
             .bind_visibility_from(state, 'is_batch_running')

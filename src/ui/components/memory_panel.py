@@ -35,3 +35,5 @@ class MemoryPanel:
                                     ui.chip(name).props('dense outline color=indigo')
                         for event in memory.events:
                             ui.label(f'• {event}').classes('text-xs text-gray-600')
+                        for hook in memory.hooks:
+                            ui.label(f'🔖 伏笔：{hook}').classes('text-xs text-purple-600')
