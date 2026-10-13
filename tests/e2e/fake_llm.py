@@ -32,6 +32,8 @@ def reply_for(messages: list[dict]) -> str:
             [{"source": "张三", "relation": "朋友", "target": "李四", "desc": "大学同学", "is_reveal": False}],
             ensure_ascii=False,
         )
+    if "请提炼这本书的文风" in user:  # 文风提炼
+        return json.dumps({"description": "测试文风：短句白描。", "samples": [1, 2]}, ensure_ascii=False)
     if "请整理这一章的记忆" in user:  # 章节记忆
         title = user.split("【章节标题】\n", 1)[1].split("\n", 1)[0] if "【章节标题】" in user else ""
         return json.dumps({"summary": f"{title}：张三与李四在咖啡馆叙旧。", "characters": ["张三", "李四"],

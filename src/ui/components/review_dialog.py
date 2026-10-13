@@ -33,6 +33,8 @@ class ReviewDialog:
     async def ask(self, review: Review, original: str, candidate: str, can_retry: bool = True) -> Optional[str]:
         """返回修改意见表示按意见重写；返回 None 表示接受当前结果。"""
         self.score.text = f'{review.score:g}分' if review.score is not None else '未评分'
+        if review.style_score is not None:
+            self.score.text += f' · 文风 {review.style_score:g}'
         self.original.value, self.candidate.value = original, candidate
         self.feedback.value = review.feedback
         self.retry.set_visibility(can_retry)

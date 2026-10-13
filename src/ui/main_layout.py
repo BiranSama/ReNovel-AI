@@ -10,6 +10,7 @@ from src.ui.components.memory_panel import MemoryPanel
 from src.ui.components.review_dialog import ReviewDialog
 from src.ui.components.settings_dialog import SettingsDialog
 from src.ui.components.sidebar import create_backup_dialog, create_import_dialog, create_sidebar
+from src.ui.components.style_panel import StylePanel
 from src.ui.components.toolbar import create_toolbar
 from src.ui.session import Session
 
@@ -52,6 +53,7 @@ def create_layout(services):
             chat_tab = ui.tab('助手', icon='chat')
             memory_tab = ui.tab('记忆', icon='auto_stories')
             character_tab = ui.tab('角色', icon='people')
+            style_tab = ui.tab('文风', icon='brush')
             graph_tab = ui.tab('图谱', icon='hub')
         with ui.tab_panels(tabs, value=chat_tab).classes('flex-grow h-full'):
             with ui.tab_panel(chat_tab).classes('p-0 flex flex-col w-full h-full'):
@@ -60,6 +62,8 @@ def create_layout(services):
                 MemoryPanel(session)
             with ui.tab_panel(character_tab).classes('p-0 w-full h-full flex flex-col'):
                 CharacterPanel(session)
+            with ui.tab_panel(style_tab).classes('p-0 w-full h-full flex flex-col'):
+                StylePanel(session)
             with ui.tab_panel(graph_tab).classes('p-0 w-full h-full flex flex-col relative'):
                 GraphPanel(session)
 
