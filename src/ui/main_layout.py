@@ -12,6 +12,7 @@ from src.ui.components.settings_dialog import SettingsDialog
 from src.ui.components.sidebar import create_backup_dialog, create_import_dialog, create_sidebar
 from src.ui.components.style_panel import StylePanel
 from src.ui.components.toolbar import create_toolbar
+from src.ui.components.welcome_dialog import WelcomeDialog, needs_setup
 from src.ui.session import Session
 
 # ==========================
@@ -73,6 +74,9 @@ def create_layout(services):
         with ui.column().classes('w-full flex-grow overflow-hidden relative'):
             editor.panel()  # 编辑器占据剩余空间
         create_toolbar(session, editor)
+
+    if needs_setup(services.settings):  # 首次启动：引导填写模型服务
+        WelcomeDialog(services.settings, services.llm).dialog.open()
 
     # 首次渲染与数据加载
     ui.timer(0.1, editor.refresh, once=True)

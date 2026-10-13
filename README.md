@@ -86,9 +86,12 @@
 ## 🚀 快速开始 (Quick Start)
 
 
-### 🚀最简单的方式
+### 🚀 最简单的方式：Windows 绿色版（无需安装 Python）
 
-**右侧release下载zip文件解压，打开Run.Bat即可**
+1. 打开仓库的 **Actions → build-exe**，进入最近一次成功的运行，在页面底部 **Artifacts** 下载 `ReNovel-windows`
+   （每个 PR 都会在 Windows 上打包并做启动自检；正式 Release 发布后也可以在右侧 Releases 下载）。
+2. 解压后双击 `ReNovel.exe`，浏览器会自动打开；首次启动会引导你选择模型服务并填写 API Key。
+3. 所有数据保存在 `ReNovel.exe` 旁边的 `data` 文件夹，拷走整个文件夹即可带走数据。详见压缩包里的 `使用说明.txt`。
 
 ## 🌟 开始
 
@@ -121,7 +124,8 @@ chmod +x setup.sh
 
 **3. 配置 API Key**
 
-启动程序后，点击右上角 ⚙️ 设置 (Settings) 图标，填入你的 OpenAI 或 Google Gemini API Key。
+首次启动会弹出引导：选择模型服务（OpenAI / DeepSeek / 硅基流动 / Gemini / Ollama 本地 / 自定义），
+填入 API Key 并测试连接。之后可在右上角 ⚙️ 设置里为各功能分别设置模型、审校策略与向量记忆。
 
 **4. 启动！**
 ```bash
@@ -211,6 +215,7 @@ ReNovel-AI/
 │   ├── utils/logger.py        # 彩色控制台日志
 │   └── paths.py               # 数据目录（开发 / exe / RENOVEL_DATA_DIR）
 ├── tests/                     # 单元测试 + 冒烟测试（假 LLM + 浏览器）
+├── scripts/self_test.py       # 打包产物的启动自检
 ├── docs/ROADMAP.md            # 重构路线图与进度
 ├── FirstTime.py               # 初始化数据目录
 └── main.py                    # 启动入口
@@ -225,6 +230,13 @@ python -m playwright install chromium   # 冒烟测试需要的浏览器
 pytest                # 全部测试
 pytest tests/unit     # 只跑单元测试（几秒）
 pytest -m e2e         # 只跑冒烟测试：用假 LLM 启动真实应用，浏览器走一遍核心流程
+```
+
+打包绿色版（CI 的 build-exe 工作流在 Windows 上做同样的事）：
+```bash
+pip install -r requirements-build.txt
+nicegui-pack --onedir --noconfirm --name ReNovel main.py   # 产物在 dist/ReNovel/
+python scripts/self_test.py dist/ReNovel/ReNovel.exe       # 启动自检（Linux / macOS 去掉 .exe）
 ```
 
 标记为 `xfail` 的用例记录的是已知问题，修复后需要移除对应标记。

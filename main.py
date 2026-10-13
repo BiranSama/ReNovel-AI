@@ -1,9 +1,19 @@
 import os
+import sys
 
-from nicegui import app, ui
+# 控制台编码不支持中文 / emoji 时（如英文 Windows 的 cp1252）替换成问号，而不是让打印日志的地方抛异常
+for _stream in (sys.stdout, sys.stderr):
+    if _stream and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
 
-from src.core.managers import Services
-from src.ui.main_layout import create_layout
+if "--self-check" in sys.argv:  # 打包产物的自检：检查依赖与数据目录后退出，不启动界面
+    from src.selfcheck import run
+    sys.exit(run())
+
+from nicegui import app, ui  # noqa: E402
+
+from src.core.managers import Services  # noqa: E402
+from src.ui.main_layout import create_layout  # noqa: E402
 
 # 应用级服务只创建一次，所有浏览器标签页共享
 services = Services()

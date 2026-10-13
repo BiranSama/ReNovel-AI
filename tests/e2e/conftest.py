@@ -85,7 +85,8 @@ class App:
 
 
 @pytest.fixture(scope="module")
-def app(fake_llm, tmp_path_factory):
+def app(fake_llm, tmp_path_factory, request):
+    """测试模块可以定义 customize_config(config, fake_llm_url) 修改初始配置。"""
     root = tmp_path_factory.mktemp("app")
     data = root / "data"
     for sub in ("projects", "models", "presets"):
@@ -97,6 +98,9 @@ def app(fake_llm, tmp_path_factory):
     config.update(enable_reviewer=True, review_threshold=8, review_mode="manual",
                   embedding={"provider": "api", "api_key": "sk-test", "base_url": f"{fake_llm}/v1",
                              "model": "fake-embedding"})
+    customize = getattr(request.module, "customize_config", None)
+    if customize:
+        config = customize(config, fake_llm)
     (data / "config.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
     port = _free_port()
