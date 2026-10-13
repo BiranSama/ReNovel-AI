@@ -88,8 +88,8 @@
 
 ### 🚀 最简单的方式：Windows 绿色版（无需安装 Python）
 
-1. 打开仓库的 **Actions → build-exe**，进入最近一次成功的运行，在页面底部 **Artifacts** 下载 `ReNovel-windows`
-   （每个 PR 都会在 Windows 上打包并做启动自检；正式 Release 发布后也可以在右侧 Releases 下载）。
+1. 在仓库右侧的 **Releases** 下载最新版本的 `ReNovel-vX.Y.Z-windows.zip`
+   （想试用还没发布的改动：在 **Actions → build-exe** 最近一次成功的运行里下载 `ReNovel-windows`，每个 PR 都会在 Windows 上打包并做启动自检）。
 2. 解压后双击 `ReNovel.exe`，浏览器会自动打开；首次启动会引导你选择模型服务并填写 API Key。
 3. 所有数据保存在 `ReNovel.exe` 旁边的 `data` 文件夹，拷走整个文件夹即可带走数据。详见压缩包里的 `使用说明.txt`。
 
