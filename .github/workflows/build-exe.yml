@@ -2,10 +2,16 @@ name: build-exe
 
 # 在 Windows 上打包绿色版（解压即用，数据保存在程序旁边的 data 目录），
 # 启动自检通过后把程序目录作为工作流附件上传。
-# 推送版本标签（如 v0.3.0）时，再用这份打包结果发布 Release，发布说明取自 docs/releases/<标签>.md
+# 推送版本标签（如 v0.3.0）时，再用这份打包结果发布 Release，发布说明取自 docs/releases/<标签>.md。
+# 也可以在 Actions 页面对 main 手动运行并填写版本标签：标签不存在时会在这次打包的提交上创建。
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的版本标签（如 v0.3.0），只能在 main 上运行；留空则只打包不发布"
+        required: false
+        default: ""
   push:
     tags: ["v*"]
 
@@ -40,7 +46,7 @@ jobs:
           retention-days: 30
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     needs: windows  # 打包和启动自检都通过后才发布
     runs-on: ubuntu-latest
     permissions:
@@ -52,11 +58,25 @@ jobs:
           name: ReNovel-windows
           path: ReNovel
       - name: 发布 Release
+        shell: bash  # 带 pipefail：查询标签失败时直接停止，不当作标签不存在
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "手动发布只能在 main 上运行（当前：$GITHUB_REF）"; exit 1
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "版本标签格式不对：$TAG（应形如 v0.3.0）"; exit 1
+          fi
+          # 标签已存在时（推送标签触发，或之前建过），必须正好指向这次打包的提交
+          commit=$(git rev-parse HEAD)
+          tagged=$(git ls-remote origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}" | tail -n1 | cut -f1)
+          if [ -n "$tagged" ] && [ "$tagged" != "$commit" ]; then
+            echo "标签 $TAG 已指向 $tagged，不是这次打包的提交 $commit"; exit 1
+          fi
           # Python 的 zipfile 会给中文文件名（使用说明.txt）打上 UTF-8 标记，Windows 解压不乱码
           python3 -m zipfile -c "ReNovel-${TAG}-windows.zip" ReNovel/
-          gh release create "$TAG" "ReNovel-${TAG}-windows.zip" --verify-tag \
+          # 标签不存在时，gh 会在 --target 指定的提交上创建它
+          gh release create "$TAG" "ReNovel-${TAG}-windows.zip" --target "$commit" \
             --title "ReNovelAI-${TAG}" --notes-file "docs/releases/${TAG}.md"
