@@ -5,6 +5,7 @@
 """
 import asyncio
 import functools
+import inspect
 
 from nicegui import ui
 
@@ -87,8 +88,9 @@ class Session:
         elif hasattr(e, 'file'): file_obj = e.file
         if file_obj:
             if hasattr(file_obj, 'read'):
-                try: content = await file_obj.read()
-                except: content = file_obj.read()
+                content = file_obj.read()
+                if inspect.isawaitable(content):
+                    content = await content
             elif hasattr(file_obj, '_data'):
                 content = file_obj._data
         return filename, content
